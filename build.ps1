@@ -43,8 +43,30 @@ function ConvertTo-Ascii([string]$Text) {
 $folderScript  = ConvertTo-Ascii $folderScript
 $dyncredScript = ConvertTo-Ascii $dyncredScript
 
-# Syntax-Check beider generierter Skripte
-foreach ($pair in @(@('DynamicFolder', $folderScript), @('DynamicCredential', $dyncredScript))) {
+# --- Loader-Variante fuer schnelle Iteration --------------------------------
+# Der eingebettete Stub enthaelt nur den Header (mit Replacement-Tokens) und
+# laedt die eigentliche Logik aus %LOCALAPPDATA%\RoyalTS-PleasantPPS. So muss
+# man den Dynamic Folder nur EINMAL importieren; danach genuegt es, die Core-
+# Datei zu aktualisieren und neu zu laden (kein Reimport/Copy-Paste).
+$coreFolder = ConvertTo-Ascii ($core + "`r`n" + (Read-Src 'Body.DynamicFolder.ps1'))
+$coreCred   = ConvertTo-Ascii ($core + "`r`n" + (Read-Src 'Body.DynamicCredential.ps1'))
+
+function New-LoaderStub([string]$HeaderName, [string]$CoreFile) {
+    $header = ConvertTo-Ascii (Read-Src $HeaderName)
+    $loader = @"
+`$__rpCore = Join-Path `$env:LOCALAPPDATA 'RoyalTS-PleasantPPS\$CoreFile'
+if (-not (Test-Path `$__rpCore)) { throw ('Core script missing: ' + `$__rpCore + ' - redeploy it.') }
+. `$__rpCore
+"@
+    return ($header + "`r`n" + $loader)
+}
+$loaderFolder = New-LoaderStub 'Header.DynamicFolder.ps1'     'rp-folder-core.ps1'
+$loaderCred   = New-LoaderStub 'Header.DynamicCredential.ps1' 'rp-credential-core.ps1'
+
+# Syntax-Check aller generierter Skripte
+foreach ($pair in @(@('DynamicFolder', $folderScript), @('DynamicCredential', $dyncredScript),
+                    @('CoreFolder', $coreFolder), @('CoreCredential', $coreCred),
+                    @('LoaderFolder', $loaderFolder), @('LoaderCredential', $loaderCred))) {
     $tokens = $null; $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseInput($pair[1], [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) {
@@ -154,6 +176,49 @@ $writer.Close()
 [System.IO.File]::WriteAllText((Join-Path $distDir 'DynamicFolder.full.ps1'), $folderScript, (New-Object System.Text.UTF8Encoding($true)))
 [System.IO.File]::WriteAllText((Join-Path $distDir 'DynamicCredential.full.ps1'), $dyncredScript, (New-Object System.Text.UTF8Encoding($true)))
 
+# --- Core-Dateien (fuer den Loader) + Loader-rdfx ---------------------------
+$utf8Bom = New-Object System.Text.UTF8Encoding($true)
+[System.IO.File]::WriteAllText((Join-Path $distDir 'rp-folder-core.ps1'), $coreFolder, $utf8Bom)
+[System.IO.File]::WriteAllText((Join-Path $distDir 'rp-credential-core.ps1'), $coreCred, $utf8Bom)
+
+# zweite rdfx nur mit den Loader-Stubs (einmal importieren, danach nur noch
+# die Core-Dateien in %LOCALAPPDATA% aktualisieren)
+$xml2  = New-Object System.Xml.XmlDocument
+$root2 = $xml2.AppendChild($xml2.CreateElement('DynamicFolderExport'))
+[void]$root2.AppendChild($xml2.CreateElement('Name')).AppendChild($xml2.CreateTextNode('Dynamic Folder Export'))
+$obj2 = $root2.AppendChild($xml2.CreateElement('Objects')).AppendChild($xml2.CreateElement('DynamicFolderExportObject'))
+function Add-Xml2Text([System.Xml.XmlElement]$Parent, [string]$Name, [string]$Text) {
+    $el = $Parent.AppendChild($xml2.CreateElement($Name)); if ($Text) { [void]$el.AppendChild($xml2.CreateTextNode($Text)) }; return $el
+}
+function Add-Xml2CData([System.Xml.XmlElement]$Parent, [string]$Name, [string]$Text) {
+    $el = $Parent.AppendChild($xml2.CreateElement($Name)); [void]$el.AppendChild($xml2.CreateCDataSection($Text)); return $el
+}
+[void](Add-Xml2Text $obj2 'Type' 'DynamicFolder')
+[void](Add-Xml2Text $obj2 'Name' 'Pleasant Password Server (SSO, Loader)')
+[void](Add-Xml2Text $obj2 'Description' 'Loader-Stub: laedt die Logik aus %LOCALAPPDATA%\RoyalTS-PleasantPPS. Einmal importieren, danach nur Core-Dateien aktualisieren.')
+[void](Add-Xml2CData $obj2 'Notes' $meta.Notes)
+$props2 = $obj2.AppendChild($xml2.CreateElement('CustomProperties'))
+foreach ($p in $meta.CustomProperties) {
+    $pEl = $props2.AppendChild($xml2.CreateElement('CustomProperty'))
+    [void](Add-Xml2Text $pEl 'Name' $p.Name); [void](Add-Xml2Text $pEl 'Type' $p.Type); [void](Add-Xml2Text $pEl 'Value' $p.Value)
+}
+[void](Add-Xml2Text $obj2 'ScriptInterpreter' 'powershell')
+[void](Add-Xml2CData $obj2 'Script' $loaderFolder)
+[void](Add-Xml2Text $obj2 'DynamicCredentialScriptInterpreter' 'powershell')
+[void](Add-Xml2CData $obj2 'DynamicCredentialScript' $loaderCred)
+[void](Add-Xml2Text $obj2 'DynamicFolderScriptTokenMode' 'ReplaceInline')
+[void](Add-Xml2Text $obj2 'DynamicFolderScriptEnvironmentPrefix' 'DynFolder_')
+[void]$obj2.AppendChild($xml2.CreateElement('DynamicFolderScriptTokens')).AppendChild($xml2.CreateElement('Token'))
+[void](Add-Xml2Text $obj2 'DynamicCredentialScriptTokenMode' 'ReplaceInline')
+[void](Add-Xml2Text $obj2 'DynamicCredentialScriptEnvironmentPrefix' 'DynCredential_')
+[void]$obj2.AppendChild($xml2.CreateElement('DynamicCredentialScriptTokens')).AppendChild($xml2.CreateElement('Token'))
+
+$loaderPath = Join-Path $distDir 'Pleasant Password (PowerShell SSO) LOADER.rdfx'
+$w2 = [System.Xml.XmlWriter]::Create($loaderPath, $settings)
+$xml2.Save($w2); $w2.Close()
+
 Write-Host "OK: $rdfxPath"
 Write-Host "OK: $rdfePath (Legacy)"
+Write-Host "OK: $loaderPath (Loader-Stub)"
 Write-Host 'OK: dist\DynamicFolder.full.ps1, dist\DynamicCredential.full.ps1'
+Write-Host 'OK: dist\rp-folder-core.ps1, dist\rp-credential-core.ps1'

@@ -1,24 +1,4 @@
 ﻿# ============================================================================
-#  Royal TS Dynamic Credential Script - Pleasant Password Server (PowerShell)
-#  Wird pro Passwort-Abruf separat ausgefuehrt; dank DPAPI-Token-Cache ist
-#  i. d. R. keine erneute Anmeldung noetig.
-# ============================================================================
-$Config = @{
-    ScriptKind       = 'Credential'
-    ServerUrl        = '$CustomProperty.ServerURL$'
-    SsoLoginUrl      = '$CustomProperty.SSOLoginURL$'
-    AuthMode         = '$CustomProperty.AuthMode$'
-    OmitDomain       = '$CustomProperty.OmitDomain$'
-    IgnoreSsl        = '$CustomProperty.IgnoreSSLErrors$'
-    UseCache         = '$CustomProperty.UseTokenCache$'
-    DebugLog         = '$CustomProperty.DebugLog$'
-    Username         = '$EffectiveUsername$'
-    UsernameNoDomain = '$EffectiveUsernameWithoutDomain$'
-    Password         = '$EffectivePassword$'
-    CredentialId     = '$DynamicCredential.EffectiveID$'
-}
-
-# ============================================================================
 #  Pleasant Password Server - Royal TS Dynamic Folder (PowerShell)
 #  Gemeinsamer Kern: HTTP, Token-Cache (DPAPI), Password-Grant (+OTP/MFA),
 #  SSO-Anmeldung ueber WebView2 (SAML im Browser, Token-Capture).
@@ -1320,22 +1300,91 @@ function Get-WebClientStoreObjects {
 }
 
 # ============================================================================
-#  Hauptteil Dynamic Credential: Passwort eines einzelnen Eintrags abrufen
-#  (API v5: GET /api/v5/rest/entries/<id>/password).
+#  Hauptteil Dynamic Folder: Ordnerbaum (API v5) laden und in das
+#  rJSON-Format von Royal TS umwandeln.
 # ============================================================================
 
+function Convert-NotesToHtml {
+    param($Notes)
+    if ($null -eq $Notes) { return '' }
+    return ([string]$Notes -replace "`r`n", '<br />' -replace "`r", '<br />' -replace "`n", '<br />')
+}
+
+function Convert-Credential {
+    param($Cred)
+    $color = ''
+    if ($Cred.PSObject.Properties['CustomApplicationFields'] -and $Cred.CustomApplicationFields) {
+        if ($Cred.CustomApplicationFields.PSObject.Properties['ForegroundColor']) {
+            $color = [string]$Cred.CustomApplicationFields.ForegroundColor
+        }
+    }
+    $tags = @()
+    if ($Cred.PSObject.Properties['Tags'] -and $Cred.Tags) {
+        $tags = @($Cred.Tags | ForEach-Object { $_.Name })
+    }
+    return [ordered]@{
+        Type             = 'DynamicCredential'
+        ID               = [string]$Cred.Id
+        Name             = [string]$Cred.Name
+        Color            = $color
+        URL              = [string]$Cred.Url
+        Username         = [string]$Cred.Username
+        Notes            = (Convert-NotesToHtml $Cred.Notes)
+        Description      = ($tags -join ', ')
+        CustomProperties = $Cred.CustomUserFields
+    }
+}
+
+# Liefert die Objekte (Unterordner + Credentials) einer Ordnerebene.
+function Get-FolderObjects {
+    param($Group)
+    $objects = New-Object System.Collections.ArrayList
+    if ($Group.PSObject.Properties['Children'] -and $Group.Children) {
+        foreach ($child in @($Group.Children)) {
+            if ($child) { [void]$objects.Add((Convert-Folder $child)) }
+        }
+    }
+    if ($Group.PSObject.Properties['Credentials'] -and $Group.Credentials) {
+        foreach ($cred in @($Group.Credentials)) {
+            if ($cred) { [void]$objects.Add((Convert-Credential $cred)) }
+        }
+    }
+    return , $objects
+}
+
+function Convert-Folder {
+    param($Group)
+    return [ordered]@{
+        Type    = 'Folder'
+        ID      = [string]$Group.Id
+        Name    = [string]$Group.Name
+        Notes   = (Convert-NotesToHtml $Group.Notes)
+        Objects = (Get-FolderObjects $Group)
+    }
+}
+
+# --- Hauptablauf ------------------------------------------------------------
 Initialize-Config
 Initialize-Http
 
-if (-not $Config.CredentialId) {
-    throw 'Keine Credential-ID uebergeben (Replacement Token DynamicCredential.EffectiveID war leer).'
-}
-
 if ($Config.AuthMode -match '^(?i)webclient$') {
-    $session = Get-WebClientSession
-    $password = Get-WebClientPassword -Session $session -CredentialId $Config.CredentialId
+    # Cookie-Modus: interne WebClient-API (fuer SSO-Server ohne API-Token)
+    $storeObjects = Get-WebClientStoreObjects
 } else {
-    $password = Invoke-PleasantApi ('/api/v5/rest/entries/' + $Config.CredentialId + '/password')
+    # REST-API (Bearer): SSO-Bearer-Capture oder Password-Grant
+    $tree = Invoke-PleasantApi '/api/v5/rest/folders/'
+    $storeObjects = New-Object System.Collections.ArrayList
+    foreach ($group in @($tree)) {
+        if (-not $group) { continue }
+        if ($group.ParentId -eq '00000000-0000-0000-0000-000000000000') {
+            # Root-Ordner selbst nicht anlegen, nur dessen Inhalt
+            foreach ($obj in (Get-FolderObjects $group)) { [void]$storeObjects.Add($obj) }
+        } else {
+            [void]$storeObjects.Add((Convert-Folder $group))
+        }
+    }
 }
 
-@{ Password = [string]$password } | ConvertTo-Json -Compress
+Write-DebugLog ('Folder tree loaded: {0} objects at top level.' -f @($storeObjects).Count)
+
+@{ Objects = $storeObjects } | ConvertTo-Json -Depth 100 -Compress

@@ -1,24 +1,4 @@
 ﻿# ============================================================================
-#  Royal TS Dynamic Credential Script - Pleasant Password Server (PowerShell)
-#  Wird pro Passwort-Abruf separat ausgefuehrt; dank DPAPI-Token-Cache ist
-#  i. d. R. keine erneute Anmeldung noetig.
-# ============================================================================
-$Config = @{
-    ScriptKind       = 'Credential'
-    ServerUrl        = '$CustomProperty.ServerURL$'
-    SsoLoginUrl      = '$CustomProperty.SSOLoginURL$'
-    AuthMode         = '$CustomProperty.AuthMode$'
-    OmitDomain       = '$CustomProperty.OmitDomain$'
-    IgnoreSsl        = '$CustomProperty.IgnoreSSLErrors$'
-    UseCache         = '$CustomProperty.UseTokenCache$'
-    DebugLog         = '$CustomProperty.DebugLog$'
-    Username         = '$EffectiveUsername$'
-    UsernameNoDomain = '$EffectiveUsernameWithoutDomain$'
-    Password         = '$EffectivePassword$'
-    CredentialId     = '$DynamicCredential.EffectiveID$'
-}
-
-# ============================================================================
 #  Pleasant Password Server - Royal TS Dynamic Folder (PowerShell)
 #  Gemeinsamer Kern: HTTP, Token-Cache (DPAPI), Password-Grant (+OTP/MFA),
 #  SSO-Anmeldung ueber WebView2 (SAML im Browser, Token-Capture).
