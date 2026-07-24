@@ -936,30 +936,55 @@ function Get-TokenViaAuthCodePkce {
         throw 'Sign-in cancelled or no authorization code received (enable Debug Log to see the last URL).'
     }
 
-    # Exchange the authorization code for a bearer token (standard OAuth2 PKCE).
-    # Build the form body as an explicit URL-encoded string - passing a
-    # hashtable to Invoke-WebRequest under Windows PowerShell 5.1 does not
-    # reliably form-encode every field (the server then reports code_verifier
-    # as missing).
+    # Exchange the authorization code for a bearer token (OAuth2 PKCE).
+    # The server keeps reporting "code_verifier required" even though the raw
+    # body clearly contains it, so we try several encodings of the same request
+    # until one is accepted, and log which. A failed (400) exchange normally
+    # does not consume the code, so several attempts per login are possible.
     Write-DebugLog 'Exchanging authorization code for access token...'
-    $body = 'grant_type=authorization_code' +
-        '&client_id=' + [uri]::EscapeDataString($script:KpClientId) +
-        '&code=' + [uri]::EscapeDataString($script:AcState.Code) +
-        '&code_verifier=' + [uri]::EscapeDataString($pkce.Verifier) +
-        '&redirect_uri=' + [uri]::EscapeDataString($script:KpRedirectUri)
-    # Log field presence/lengths (never the secret values) so we can see the
-    # body was built correctly and the content type used.
-    # Sanity check: SHA256(verifier) must equal the challenge we sent to authorize
-    $recomputed = [Convert]::ToBase64String(([System.Security.Cryptography.SHA256]::Create()).ComputeHash([System.Text.Encoding]::ASCII.GetBytes($pkce.Verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-    Write-DebugLog ('Token request: code(len={0}), code_verifier(len={1}), bodyLen={2}, pkce_ok={3}' -f `
-        $script:AcState.Code.Length, $pkce.Verifier.Length, $body.Length, ($recomputed -eq $pkce.Challenge))
-    $r = Invoke-FormPost -Uri ($Config.ServerUrl + '/OAuth2/Token') -Body $body
+    $code = $script:AcState.Code
+    $ver  = $pkce.Verifier
+    $ruri = $script:KpRedirectUri
+    $cid  = $script:KpClientId
+    $cidNoBraces = $cid.Trim('{', '}')
+
+    $pairsFull = @(
+        'grant_type=authorization_code',
+        ('client_id=' + [uri]::EscapeDataString($cid)),
+        ('code=' + [uri]::EscapeDataString($code)),
+        ('code_verifier=' + [uri]::EscapeDataString($ver)),
+        ('redirect_uri=' + [uri]::EscapeDataString($ruri))
+    )
+    $bodyFull     = ($pairsFull -join '&')
+    $bodyNoClient = (($pairsFull | Where-Object { $_ -notlike 'client_id=*' }) -join '&')
+    $bodyNoBraces = (($pairsFull | ForEach-Object { if ($_ -like 'client_id=*') { 'client_id=' + [uri]::EscapeDataString($cidNoBraces) } else { $_ } }) -join '&')
+    $tokenUrl     = $Config.ServerUrl + '/OAuth2/Token'
+
+    $strategies = @(
+        @{ Name = 'body-standard';        Url = $tokenUrl;                   Body = $bodyFull },
+        @{ Name = 'query+body';           Url = $tokenUrl + '?' + $bodyFull; Body = $bodyFull },
+        @{ Name = 'query-only';           Url = $tokenUrl + '?' + $bodyFull; Body = '' },
+        @{ Name = 'body-client-nobraces'; Url = $tokenUrl;                   Body = $bodyNoBraces },
+        @{ Name = 'body-no-client';       Url = $tokenUrl;                   Body = $bodyNoClient }
+    )
+
+    $recomputed = [Convert]::ToBase64String(([System.Security.Cryptography.SHA256]::Create()).ComputeHash([System.Text.Encoding]::ASCII.GetBytes($ver))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    Write-DebugLog ('Token request: code(len={0}), code_verifier(len={1}), pkce_ok={2}' -f $code.Length, $ver.Length, ($recomputed -eq $pkce.Challenge))
+
+    $r = $null
+    foreach ($s in $strategies) {
+        $attempt = Invoke-FormPost -Uri $s.Url -Body $s.Body
+        if ($attempt.Ok) {
+            Write-DebugLog ('Token strategy "{0}": HTTP {1} OK.' -f $s.Name, $attempt.Status)
+            $r = $attempt
+            break
+        }
+        Write-DebugLog ('Token strategy "{0}": HTTP {1}, body: [{2}]' -f $s.Name, $attempt.Status, $attempt.Content)
+        $r = $attempt
+    }
     if (-not $r.Ok) {
-        # Safe to log: an error body carries no token, only the OAuth error code
-        Write-DebugLog ('Token endpoint error: HTTP {0}, body: [{1}]' -f $r.Status, $r.Content)
         throw ('Token exchange failed: HTTP {0} {1}' -f $r.Status, $r.Content)
     }
-    Write-DebugLog 'Token endpoint: HTTP 200 (access token received).'
     $tok = $r.Content | ConvertFrom-Json
     if (-not $tok.access_token) { throw 'Token endpoint returned no access_token.' }
 
