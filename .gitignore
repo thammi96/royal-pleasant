@@ -1,0 +1,3 @@
+# nichts Generiertes ignorieren – dist/ wird bewusst mit eingecheckt,
+# damit die rdfe direkt aus GitHub heruntergeladen werden kann
+*.log
