@@ -85,11 +85,19 @@ function Invoke-Http {
                 # Windows PowerShell 5.1: HttpWebResponse
                 $status = [int]$ex.Response.StatusCode
                 foreach ($k in $ex.Response.Headers.AllKeys) { $h[$k] = [string]$ex.Response.Headers[$k] }
-                try {
-                    $sr = New-Object System.IO.StreamReader($ex.Response.GetResponseStream())
-                    $content = $sr.ReadToEnd()
-                    $sr.Close()
-                } catch { }
+                # In PS 5.1 the response body is usually already captured here:
+                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                    $content = [string]$_.ErrorDetails.Message
+                }
+                if (-not $content) {
+                    try {
+                        $stream = $ex.Response.GetResponseStream()
+                        if ($stream.CanSeek) { $stream.Position = 0 }
+                        $sr = New-Object System.IO.StreamReader($stream)
+                        $content = $sr.ReadToEnd()
+                        $sr.Close()
+                    } catch { }
+                }
             }
         }
         if ($status -eq 0) {
@@ -914,7 +922,8 @@ function Get-TokenViaAuthCodePkce {
     $r = Invoke-Http -Method 'POST' -Uri ($Config.ServerUrl + '/OAuth2/Token') -Body $body -ContentType 'application/x-www-form-urlencoded'
     if (-not $r.Ok) {
         # Safe to log: an error body carries no token, only the OAuth error code
-        Write-DebugLog ('Token endpoint error: HTTP {0}, body: {1}' -f $r.Status, $r.Content)
+        $hdrs = ($r.Headers.GetEnumerator() | Where-Object { $_.Key -match 'error|auth|warn' } | ForEach-Object { $_.Key + '=' + $_.Value }) -join '; '
+        Write-DebugLog ('Token endpoint error: HTTP {0}, body: [{1}], headers: [{2}]' -f $r.Status, $r.Content, $hdrs)
         throw ('Token exchange failed: HTTP {0} {1}' -f $r.Status, $r.Content)
     }
     Write-DebugLog 'Token endpoint: HTTP 200 (access token received).'
