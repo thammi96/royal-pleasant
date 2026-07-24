@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 # Bump this whenever the embedded script changes, so the debug log shows
 # unambiguously which version Royal TS is actually running.
-$script:BuildTag = 'v9-verifier-in-query'
+$script:BuildTag = 'v10-all-in-query'
 
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
@@ -968,8 +968,9 @@ function Get-TokenViaAuthCodePkce {
     $verifierQuery = 'code_verifier=' + [uri]::EscapeDataString($ver)
 
     $strategies = @(
-        @{ Name = 'body+verifier-in-query'; Url = $tokenUrl + '?' + $verifierQuery; Body = $bodyFull },
-        @{ Name = 'all-in-query+body';      Url = $tokenUrl + '?' + $bodyFull;      Body = $bodyFull }
+        @{ Name = 'all-in-query+body';      Url = $tokenUrl + '?' + $bodyFull;      Body = $bodyFull },
+        @{ Name = 'all-in-query-empty-body'; Url = $tokenUrl + '?' + $bodyFull;     Body = '' },
+        @{ Name = 'body+verifier-in-query'; Url = $tokenUrl + '?' + $verifierQuery; Body = $bodyFull }
     )
 
     $recomputed = [Convert]::ToBase64String(([System.Security.Cryptography.SHA256]::Create()).ComputeHash([System.Text.Encoding]::ASCII.GetBytes($ver))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
