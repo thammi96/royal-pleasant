@@ -924,14 +924,20 @@ function Get-TokenViaAuthCodePkce {
     }
 
     # Exchange the authorization code for a bearer token (standard OAuth2 PKCE).
+    # Build the form body as an explicit URL-encoded string - passing a
+    # hashtable to Invoke-WebRequest under Windows PowerShell 5.1 does not
+    # reliably form-encode every field (the server then reports code_verifier
+    # as missing).
     Write-DebugLog 'Exchanging authorization code for access token...'
-    $body = @{
-        grant_type    = 'authorization_code'
-        client_id     = $script:KpClientId
-        code          = $script:AcState.Code
-        code_verifier = $pkce.Verifier
-        redirect_uri  = $script:KpRedirectUri
-    }
+    $body = 'grant_type=authorization_code' +
+        '&client_id=' + [uri]::EscapeDataString($script:KpClientId) +
+        '&code=' + [uri]::EscapeDataString($script:AcState.Code) +
+        '&code_verifier=' + [uri]::EscapeDataString($pkce.Verifier) +
+        '&redirect_uri=' + [uri]::EscapeDataString($script:KpRedirectUri)
+    # Log field presence/lengths (never the secret values) so we can see the
+    # body was built correctly and the content type used.
+    Write-DebugLog ('Token request: grant_type=authorization_code, client_id={0}, code(len={1}), code_verifier(len={2}), redirect_uri={3}, bodyLen={4}, contentType=application/x-www-form-urlencoded' -f `
+        $script:KpClientId, $script:AcState.Code.Length, $pkce.Verifier.Length, $script:KpRedirectUri, $body.Length)
     $r = Invoke-Http -Method 'POST' -Uri ($Config.ServerUrl + '/OAuth2/Token') -Body $body -ContentType 'application/x-www-form-urlencoded'
     if (-not $r.Ok) {
         # Safe to log: an error body carries no token, only the OAuth error code
