@@ -895,19 +895,29 @@ function Get-TokenViaAuthCodePkce {
         throw 'Sign-in cancelled or no authorization code received (enable Debug Log to see the last URL).'
     }
 
-    # Exchange the authorization code for a bearer token (PKCE)
+    # Exchange the authorization code for a bearer token (PKCE).
+    # device_* / mac / client_* mirror the KeePass client's request so the
+    # server can bind the code to the same device it was issued for.
     Write-DebugLog 'Exchanging authorization code for access token...'
     $body = @{
-        grant_type    = 'authorization_code'
-        client_id     = $script:KpClientId
-        code          = $script:AcState.Code
-        code_verifier = $pkce.Verifier
-        redirect_uri  = $script:KpRedirectUri
+        grant_type            = 'authorization_code'
+        client_id             = $script:KpClientId
+        code                  = $script:AcState.Code
+        code_verifier         = $pkce.Verifier
+        redirect_uri          = $script:KpRedirectUri
+        device_id             = $deviceId
+        device_name           = $deviceName
+        mac_addresses         = $deviceId
+        client_version_number = '9.2.0.0'
+        client_user           = $clientUser
     }
     $r = Invoke-Http -Method 'POST' -Uri ($Config.ServerUrl + '/OAuth2/Token') -Body $body -ContentType 'application/x-www-form-urlencoded'
     if (-not $r.Ok) {
+        # Safe to log: an error body carries no token, only the OAuth error code
+        Write-DebugLog ('Token endpoint error: HTTP {0}, body: {1}' -f $r.Status, $r.Content)
         throw ('Token exchange failed: HTTP {0} {1}' -f $r.Status, $r.Content)
     }
+    Write-DebugLog 'Token endpoint: HTTP 200 (access token received).'
     $tok = $r.Content | ConvertFrom-Json
     if (-not $tok.access_token) { throw 'Token endpoint returned no access_token.' }
 
