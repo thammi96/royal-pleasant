@@ -24,6 +24,8 @@ Die REST-API von Pleasant Password Server kennt offiziell **nur den OAuth2 Resou
 
 Für Umgebungen ohne SSO-Zwang (oder Konten mit *„Allow Exception For Direct Sign-In"*) gibt es weiterhin den klassischen Auth Mode `Password` inkl. MFA über die `X-Pleasant-OTP`-Header.
 
+> ⚠️ **Serverabhängig!** Ob überhaupt ein API-Zugang möglich ist, hängt von der Pleasant-Server-Konfiguration ab. Auf einem Server mit **erzwungenem SAML-SSO und deaktiviertem Password-Grant** ist client-seitig *kein* API-Token erreichbar — dann ist ein dedizierter API-Service-Account nötig (Admin-Aufgabe). Analyse und genauer Einrichtungsweg: **[docs/SERVER-FINDINGS.md](docs/SERVER-FINDINGS.md)**.
+
 ## Installation
 
 ### 1. Voraussetzungen

@@ -457,15 +457,20 @@ function Get-TokenViaSso {
         $ssoUrl = $Config.SsoLoginUrl
         Write-DebugLog ('SSO-Login-URL aus Custom Property: {0}' -f $ssoUrl)
     } else {
-        $ssoUrl = $Config.ServerUrl + '/WebClient'
-        try {
-            $probe = Invoke-Http -Method 'GET' -Uri $ssoUrl
-            if ($probe.Status -eq 404) {
-                $ssoUrl = $Config.ServerUrl + '/'
-                Write-DebugLog 'Kein WebClient unter /WebClient (404) - nutze Server-Root als Login-Seite.'
+        # Pleasant 9: WebClient liegt unter /WebClient/Main; aeltere Staende
+        # unter /WebClient. Bei 404 auf Server-Root ausweichen.
+        foreach ($cand in @('/WebClient/Main', '/WebClient', '/')) {
+            $ssoUrl = $Config.ServerUrl + $cand
+            try {
+                $probe = Invoke-Http -Method 'GET' -Uri $ssoUrl
+                if ($probe.Status -ne 404) {
+                    Write-DebugLog ('SSO-Login-Seite: {0} (HTTP {1})' -f $ssoUrl, $probe.Status)
+                    break
+                }
+            } catch {
+                Write-DebugLog ('Probe {0} fehlgeschlagen ({1})' -f $ssoUrl, $_.Exception.Message)
+                break
             }
-        } catch {
-            Write-DebugLog ('WebClient-Probe fehlgeschlagen ({0}) - bleibe bei /WebClient.' -f $_.Exception.Message)
         }
     }
 
