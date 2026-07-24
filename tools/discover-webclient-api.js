@@ -95,6 +95,44 @@
         return origSend.apply(this, arguments);
     };
 
+    // Baum-/Grid-HTML strukturell ausgeben: nur Tag-Namen + Attribut-NAMEN,
+    // sowie bei data-*-Attributen ein Hinweis auf den Werttyp (guid/num/leer).
+    // KEINE Textinhalte, KEINE Ordner-/Kundennamen, KEINE Attributwerte.
+    window.__dumpTree = function () {
+        function classify(val) {
+            if (val == null || val === '') return 'empty';
+            if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)) return 'guid';
+            if (/^-?\d+$/.test(val)) return 'num';
+            if (/^(https?:)?\/\//i.test(val) || val.charAt(0) === '/') return 'url/path';
+            return 'str';
+        }
+        function skel(el, depth) {
+            if (depth > 25 || !el) return '';
+            var pad = new Array(depth + 1).join('  ');
+            var attrs = [];
+            for (var i = 0; i < el.attributes.length; i++) {
+                var a = el.attributes[i];
+                if (a.name === 'class') { attrs.push('class=' + (el.className || '').split(/\s+/).slice(0, 4).join('.')); }
+                else if (a.name.indexOf('data-') === 0 || a.name === 'id' || a.name === 'role' || a.name === 'href') { attrs.push(a.name + '{' + classify(a.value) + '}'); }
+                else { attrs.push(a.name); }
+            }
+            var line = pad + '<' + el.tagName.toLowerCase() + (attrs.length ? ' ' + attrs.join(' ') : '') + '>\n';
+            var kids = el.children, out = '';
+            // pro Ebene max. 3 Geschwister zeigen (Struktur reicht)
+            for (var j = 0; j < Math.min(kids.length, 3); j++) { out += skel(kids[j], depth + 1); }
+            if (kids.length > 3) { out += pad + '  ...(' + kids.length + ' siblings)\n'; }
+            return line + out;
+        }
+        var candidates = ['[data-role=treeview]', '.k-treeview', '#treeview', '.credential-tree', '[data-role=grid]', '.k-grid'];
+        var text = '===== WEBCLIENT DOM-SKELETT (nur Struktur, keine Werte) =====\n';
+        candidates.forEach(function (sel) {
+            var el = document.querySelector(sel);
+            if (el) { text += '\n### ' + sel + '\n' + skel(el, 0); }
+        });
+        console.log(text);
+        return text;
+    };
+
     window.__dumpApi = function () {
         // nur eindeutige Endpunkte, aber mit einem Beispiel-Shape je Endpunkt
         var seen = {}, out = [];
