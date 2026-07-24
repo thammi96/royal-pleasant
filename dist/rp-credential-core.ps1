@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 # Bump this whenever the embedded script changes, so the debug log shows
 # unambiguously which version Royal TS is actually running.
-$script:BuildTag = 'v11-direct-authorize+loader'
+$script:BuildTag = 'v12-log-full-request'
 
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
@@ -840,6 +840,9 @@ function Get-TokenViaAuthCodePkce {
         try {
             $q = ''
             if ($Uri -match '\?(.*)$') { $q = $Matches[1] }
+            # Log the full callback query (one-time code, harmless after use) so
+            # we can see every parameter the server sends back, not just code/state.
+            Write-DebugLog ('Callback query: ' + $q)
             $code = $null; $st = $null
             foreach ($kv in ($q -split '&')) {
                 $p = $kv -split '=', 2
@@ -957,33 +960,18 @@ function Get-TokenViaAuthCodePkce {
     )
     $bodyFull     = ($pairsFull -join '&')
     $tokenUrl     = $Config.ServerUrl + '/OAuth2/Token'
-    # Pleasant reads code_verifier from the QUERY STRING (verified empirically:
-    # verifier in the body -> "code_verifier required"; verifier in the query ->
-    # accepted). grant_type/client_id/code must stay in the body; client_id
-    # must keep its braces. So: full body + code_verifier also in the query.
-    $verifierQuery = 'code_verifier=' + [uri]::EscapeDataString($ver)
-
-    $strategies = @(
-        @{ Name = 'all-in-query+body';      Url = $tokenUrl + '?' + $bodyFull;      Body = $bodyFull },
-        @{ Name = 'all-in-query-empty-body'; Url = $tokenUrl + '?' + $bodyFull;     Body = '' },
-        @{ Name = 'body+verifier-in-query'; Url = $tokenUrl + '?' + $verifierQuery; Body = $bodyFull }
-    )
 
     $recomputed = [Convert]::ToBase64String(([System.Security.Cryptography.SHA256]::Create()).ComputeHash([System.Text.Encoding]::ASCII.GetBytes($ver))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
     Write-DebugLog ('Token request: code(len={0}), code_verifier(len={1}), pkce_ok={2}' -f $code.Length, $ver.Length, ($recomputed -eq $pkce.Challenge))
+    # Log the exact outgoing request (URL + body) once. The auth code and the
+    # code_verifier are single-use and worthless after this exchange, so this is
+    # safe and lets us confirm byte-for-byte what the server receives.
+    Write-DebugLog ('Token POST url: ' + $tokenUrl)
+    Write-DebugLog ('Token POST body: ' + $bodyFull)
 
-    $r = $null
-    foreach ($s in $strategies) {
-        $attempt = Invoke-FormPost -Uri $s.Url -Body $s.Body
-        if ($attempt.Ok) {
-            Write-DebugLog ('Token strategy "{0}": HTTP {1} OK.' -f $s.Name, $attempt.Status)
-            $r = $attempt
-            break
-        }
-        Write-DebugLog ('Token strategy "{0}": HTTP {1}, body: [{2}]' -f $s.Name, $attempt.Status, $attempt.Content)
-        $r = $attempt
-    }
+    $r = Invoke-FormPost -Uri $tokenUrl -Body $bodyFull
     if (-not $r.Ok) {
+        Write-DebugLog ('Token endpoint error: HTTP {0}, body: [{1}]' -f $r.Status, $r.Content)
         throw ('Token exchange failed: HTTP {0} {1}' -f $r.Status, $r.Content)
     }
     $tok = $r.Content | ConvertFrom-Json
