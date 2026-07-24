@@ -9,6 +9,10 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Bump this whenever the embedded script changes, so the debug log shows
+# unambiguously which version Royal TS is actually running.
+$script:BuildTag = 'v9-verifier-in-query'
+
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
 if (-not (Test-Path $script:AppDir)) {
@@ -36,7 +40,7 @@ function Initialize-Config {
     if ($Config.AuthMode -notmatch '^(?i)(sso|password|webclient)$') {
         throw ('Custom Property "Auth Mode" muss "WebClient", "SSO" oder "Password" sein (aktuell: "{0}").' -f $Config.AuthMode)
     }
-    Write-DebugLog ('Start - Server={0} AuthMode={1} PS={2}/{3}' -f $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
+    Write-DebugLog ('Start - Build={0} Server={1} AuthMode={2} PS={3}/{4}' -f $script:BuildTag, $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
 }
 
 # ---------------------------------------------------------------------------
