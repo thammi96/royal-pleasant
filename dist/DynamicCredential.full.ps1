@@ -847,13 +847,25 @@ function New-CookieWebSession {
     return $session
 }
 
-# Session gueltig? (angemeldete /WebClient/Main-Seite statt Redirect auf SignIn)
+# Session gueltig? Test ueber den echten API-Endpunkt GetTree:
+# angemeldet -> JSON-Array; nicht angemeldet -> Redirect auf die SignIn-HTML.
 function Test-WebClientSession {
     param($Session)
     try {
-        $r = Invoke-WebRequest -Uri ($Config.ServerUrl + '/WebClient/Main') -WebSession $Session -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 30 -ErrorAction Stop
-        return ($r.StatusCode -eq 200 -and $r.Content -notmatch 'SingleSignOn|Account/SignIn')
+        $r = Invoke-WebRequest -Uri ($Config.ServerUrl + '/WebClient/Main/GetTree?id=') -WebSession $Session -UseBasicParsing -TimeoutSec 30 `
+             -Headers @{ 'X-Requested-With' = 'XMLHttpRequest' } -ErrorAction Stop
+        $content = [string]$r.Content
+        $trimmed = $content.TrimStart()
+        $looksJson = ($trimmed.StartsWith('[') -or $trimmed.StartsWith('{'))
+        Write-DebugLog ('Session-Test GetTree: HTTP {0}, Laenge {1}, jsonish={2}' -f [int]$r.StatusCode, $content.Length, $looksJson)
+        if (-not $looksJson) {
+            $snippet = ($content -replace '\s+', ' ')
+            if ($snippet.Length -gt 160) { $snippet = $snippet.Substring(0, 160) }
+            Write-DebugLog ('Session-Test: keine JSON-Antwort, Anfang: {0}' -f $snippet)
+        }
+        return $looksJson
     } catch {
+        Write-DebugLog ('Session-Test Fehler: {0}' -f $_.Exception.Message)
         return $false
     }
 }
