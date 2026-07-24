@@ -431,6 +431,24 @@ function Get-TokenViaSso {
 })()
 '@
 
+    # --- Start-URL bestimmen: Custom Property > /WebClient > Server-Root ----
+    $ssoUrl = $null
+    if ($Config.ContainsKey('SsoLoginUrl') -and $Config.SsoLoginUrl -and $Config.SsoLoginUrl -ne 'TODO') {
+        $ssoUrl = $Config.SsoLoginUrl
+        Write-DebugLog ('SSO-Login-URL aus Custom Property: {0}' -f $ssoUrl)
+    } else {
+        $ssoUrl = $Config.ServerUrl + '/WebClient'
+        try {
+            $probe = Invoke-Http -Method 'GET' -Uri $ssoUrl
+            if ($probe.Status -eq 404) {
+                $ssoUrl = $Config.ServerUrl + '/'
+                Write-DebugLog 'Kein WebClient unter /WebClient (404) - nutze Server-Root als Login-Seite.'
+            }
+        } catch {
+            Write-DebugLog ('WebClient-Probe fehlgeschlagen ({0}) - bleibe bei /WebClient.' -f $_.Exception.Message)
+        }
+    }
+
     $script:SsoForm = New-Object System.Windows.Forms.Form
     $script:SsoForm.Text          = 'Pleasant Password Server - SSO-Anmeldung (Fenster schließt sich automatisch)'
     $script:SsoForm.Size          = New-Object System.Drawing.Size(1050, 800)
@@ -508,10 +526,11 @@ function Get-TokenViaSso {
         } catch { }
     })
 
+    $script:SsoStartUrl = $ssoUrl
     $script:SsoForm.add_Shown({
         $script:SsoTimer.Start()
         try {
-            $script:SsoWebView.Source = [Uri]($Config.ServerUrl + '/WebClient')
+            $script:SsoWebView.Source = [Uri]$script:SsoStartUrl
         } catch {
             $script:SsoState.Error = 'WebView2 konnte nicht gestartet werden: ' + $_.Exception.Message
             $script:SsoForm.Close()

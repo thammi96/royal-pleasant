@@ -1,12 +1,13 @@
 ﻿# ============================================================================
-#  Royal TS Dynamic Folder Script – Pleasant Password Server (PowerShell)
-#  Die $...$-Platzhalter werden von Royal TS vor der Ausführung ersetzt
-#  (Replacement Tokens). Hinweis: Passwörter mit einfachem Anführungszeichen
-#  (') brechen die Ersetzung – siehe Doku.
+#  Royal TS Dynamic Folder Script - Pleasant Password Server (PowerShell)
+#  Die $...$-Platzhalter werden von Royal TS vor der Ausfuehrung ersetzt
+#  (Replacement Tokens). Hinweis: Passwoerter mit einfachem Anfuehrungszeichen
+#  (') brechen die Ersetzung - siehe Doku.
 # ============================================================================
 $Config = @{
     ScriptKind       = 'Folder'
     ServerUrl        = '$CustomProperty.ServerURL$'
+    SsoLoginUrl      = '$CustomProperty.SSOLoginURL$'
     AuthMode         = '$CustomProperty.AuthMode$'
     OmitDomain       = '$CustomProperty.OmitDomain$'
     IgnoreSsl        = '$CustomProperty.IgnoreSSLErrors$'
@@ -18,9 +19,9 @@ $Config = @{
 }
 
 # ============================================================================
-#  Pleasant Password Server – Royal TS Dynamic Folder (PowerShell)
+#  Pleasant Password Server - Royal TS Dynamic Folder (PowerShell)
 #  Gemeinsamer Kern: HTTP, Token-Cache (DPAPI), Password-Grant (+OTP/MFA),
-#  SSO-Anmeldung über WebView2 (SAML im Browser, Token-Capture).
+#  SSO-Anmeldung ueber WebView2 (SAML im Browser, Token-Capture).
 #
 #  Diese Datei wird von build.ps1 in beide Skripte eingebettet
 #  (Dynamic Folder Script und Dynamic Credential Script).
@@ -45,7 +46,7 @@ function Write-DebugLog {
 }
 
 # ---------------------------------------------------------------------------
-# Konfiguration prüfen/normalisieren
+# Konfiguration pruefen/normalisieren
 # ---------------------------------------------------------------------------
 function Initialize-Config {
     if (-not $Config.ServerUrl -or $Config.ServerUrl -eq 'TODO') {
@@ -55,11 +56,11 @@ function Initialize-Config {
     if ($Config.AuthMode -notmatch '^(?i)(sso|password)$') {
         throw ('Custom Property "Auth Mode" muss "SSO" oder "Password" sein (aktuell: "{0}").' -f $Config.AuthMode)
     }
-    Write-DebugLog ('Start – Server={0} AuthMode={1} PS={2}/{3}' -f $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
+    Write-DebugLog ('Start - Server={0} AuthMode={1} PS={2}/{3}' -f $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
 }
 
 # ---------------------------------------------------------------------------
-# HTTP-Grundlagen (TLS 1.2, optional Zertifikatsprüfung deaktivieren)
+# HTTP-Grundlagen (TLS 1.2, optional Zertifikatspruefung deaktivieren)
 # ---------------------------------------------------------------------------
 function Initialize-Http {
     try {
@@ -70,8 +71,8 @@ function Initialize-Http {
     }
 }
 
-# Dünner Wrapper um Invoke-WebRequest: wirft bei HTTP-Fehlern NICHT, sondern
-# liefert Status/Header/Content zurück (wird u. a. für die OTP-Header benötigt).
+# Duenner Wrapper um Invoke-WebRequest: wirft bei HTTP-Fehlern NICHT, sondern
+# liefert Status/Header/Content zurueck (wird u. a. fuer die OTP-Header benoetigt).
 function Invoke-Http {
     param(
         [string]$Method,
@@ -127,11 +128,11 @@ function Get-HeaderValue {
 }
 
 # ---------------------------------------------------------------------------
-# Token-Cache: DPAPI-verschlüsselt (nur aktueller Windows-Benutzer) unter
+# Token-Cache: DPAPI-verschluesselt (nur aktueller Windows-Benutzer) unter
 # %LOCALAPPDATA%\RoyalTS-PleasantPPS\token-<hash>.dat
 # Verhindert, dass bei jedem Reload / jedem Passwort-Abruf neu angemeldet
-# werden muss – wichtig, weil das Dynamic-Credential-Skript pro Abruf
-# separat ausgeführt wird.
+# werden muss - wichtig, weil das Dynamic-Credential-Skript pro Abruf
+# separat ausgefuehrt wird.
 # ---------------------------------------------------------------------------
 function Get-TokenCachePath {
     $keySource = '{0}|{1}|{2}|{3}' -f $Config.ServerUrl.ToLowerInvariant(), $Config.AuthMode.ToLowerInvariant(), $Config.Username, $env:USERNAME
@@ -151,7 +152,7 @@ function Get-CachedToken {
         $obj = [System.Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json
         $now = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         if ($now -lt ([long]$obj.expires_at - 60)) {
-            Write-DebugLog ('Token-Cache-Treffer, gültig bis {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds([long]$obj.expires_at).LocalDateTime)
+            Write-DebugLog ('Token-Cache-Treffer, gueltig bis {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds([long]$obj.expires_at).LocalDateTime)
             return [string]$obj.access_token
         }
         Write-DebugLog 'Token im Cache ist abgelaufen.'
@@ -171,7 +172,7 @@ function Save-CachedToken {
             [System.Text.Encoding]::UTF8.GetBytes($json), $null,
             [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
         [System.IO.File]::WriteAllBytes((Get-TokenCachePath), $enc)
-        Write-DebugLog ('Token im Cache gespeichert, gültig bis {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds($ExpiresAt).LocalDateTime)
+        Write-DebugLog ('Token im Cache gespeichert, gueltig bis {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds($ExpiresAt).LocalDateTime)
     } catch {
         Write-DebugLog ('Token-Cache schreiben fehlgeschlagen: {0}' -f $_.Exception.Message)
     }
@@ -198,8 +199,8 @@ function Get-JwtExpiry {
     return $null
 }
 
-# Prüft, ob ein Token von der API akzeptiert wird (alles außer 401/403 gilt
-# als authentifiziert – so bleibt der Check unabhängig vom konkreten Endpunkt).
+# Prueft, ob ein Token von der API akzeptiert wird (alles ausser 401/403 gilt
+# als authentifiziert - so bleibt der Check unabhaengig vom konkreten Endpunkt).
 function Test-AccessToken {
     param([string]$Token)
     if (-not $Token) { return $false }
@@ -215,7 +216,7 @@ function Test-AccessToken {
 }
 
 # ---------------------------------------------------------------------------
-# Einfacher Eingabedialog (für OTP im Password-Modus)
+# Einfacher Eingabedialog (fuer OTP im Password-Modus)
 # ---------------------------------------------------------------------------
 function Show-InputDialog {
     param([string]$Message, [string]$Title = 'Pleasant Password Server')
@@ -267,14 +268,14 @@ function Show-InputDialog {
 
 # ---------------------------------------------------------------------------
 # Auth-Modus "Password": klassischer OAuth2 Resource Owner Password Grant
-# inkl. MFA über die X-Pleasant-OTP-Header (wie im Python-Original).
+# inkl. MFA ueber die X-Pleasant-OTP-Header (wie im Python-Original).
 # Doku: https://pleasantpasswords.com/info/pleasant-password-server/
 #       m-programmatic-access/restful-api/oauth-two-factor-support
 # ---------------------------------------------------------------------------
 function Get-TokenViaPasswordGrant {
     $user = if ($Config.OmitDomain -eq 'Yes') { $Config.UsernameNoDomain } else { $Config.Username }
     if (-not $user -or -not $Config.Password) {
-        throw 'Auth Mode "Password": Dem Dynamic Folder müssen Zugangsdaten zugewiesen sein (Eigenschaften -> Zugangsdaten).'
+        throw 'Auth Mode "Password": Dem Dynamic Folder muessen Zugangsdaten zugewiesen sein (Eigenschaften -> Zugangsdaten).'
     }
 
     $tokenUri = $Config.ServerUrl + '/OAuth2/Token'
@@ -285,7 +286,7 @@ function Get-TokenViaPasswordGrant {
     if (-not $r.Ok -and (Get-HeaderValue $r.Headers 'X-Pleasant-OTP') -eq 'required') {
         $provider = Get-HeaderValue $r.Headers 'X-Pleasant-OTP-Provider'
         Write-DebugLog ('MFA erforderlich, Provider: {0}' -f $provider)
-        $otp = Show-InputDialog ('Einmalpasswort (OTP) für MFA eingeben' + $(if ($provider) { " - Provider: $provider" } else { '' }) + ':')
+        $otp = Show-InputDialog ('Einmalpasswort (OTP) fuer MFA eingeben' + $(if ($provider) { " - Provider: $provider" } else { '' }) + ':')
         if (-not $otp) { throw 'MFA abgebrochen: kein OTP eingegeben.' }
         $otpHeaders = @{ 'X-Pleasant-OTP-Provider' = $provider; 'X-Pleasant-OTP' = $otp }
         $r = Invoke-Http -Method 'POST' -Uri $tokenUri -Body $body -ContentType 'application/x-www-form-urlencoded' -Headers $otpHeaders
@@ -293,7 +294,7 @@ function Get-TokenViaPasswordGrant {
 
     if (-not $r.Ok) {
         if ($r.Status -eq 400) {
-            throw ('Anmeldung fehlgeschlagen (HTTP 400). Häufige Ursache: redundanter Domänenname im Benutzernamen -> Custom Property "Omit Domain" auf Yes setzen. Bei SSO-only-Konten muss im Pleasant-Server "Allow Exception For Direct Sign-In" aktiv sein oder Auth Mode "SSO" verwendet werden. Details: {0}' -f $r.Content)
+            throw ('Anmeldung fehlgeschlagen (HTTP 400). Haeufige Ursache: redundanter Domaenenname im Benutzernamen -> Custom Property "Omit Domain" auf Yes setzen. Bei SSO-only-Konten muss im Pleasant-Server "Allow Exception For Direct Sign-In" aktiv sein oder Auth Mode "SSO" verwendet werden. Details: {0}' -f $r.Content)
         }
         throw ('Token-Endpoint meldet HTTP {0}: {1}' -f $r.Status, $r.Content)
     }
@@ -311,7 +312,7 @@ function Get-TokenViaPasswordGrant {
 }
 
 # ---------------------------------------------------------------------------
-# WebView2-SDK-Bootstrap: Royal TS führt PowerShell-Skripte mit Windows
+# WebView2-SDK-Bootstrap: Royal TS fuehrt PowerShell-Skripte mit Windows
 # PowerShell 5.1 (.NET Framework) aus. Die WebView2 Evergreen *Runtime* ist
 # auf Win 10/11 vorhanden, aber die managed SDK-Wrapper (net462) fehlen ->
 # beim ersten SSO-Lauf automatisch von nuget.org nachladen.
@@ -351,13 +352,13 @@ function Install-WebView2SdkAuto {
 
 # ---------------------------------------------------------------------------
 # Auth-Modus "SSO": Die Pleasant-API kennt offiziell nur den Password-Grant.
-# Für SAML-SSO-Konten öffnen wir daher ein WebView2-Fenster mit dem Pleasant
-# WebClient. Die SAML-Anmeldung (inkl. MFA/Conditional Access) übernimmt der
+# Fuer SAML-SSO-Konten oeffnen wir daher ein WebView2-Fenster mit dem Pleasant
+# WebClient. Die SAML-Anmeldung (inkl. MFA/Conditional Access) uebernimmt der
 # IdP im Browser. Sobald der WebClient angemeldet ist, ruft er die REST-API
-# mit einem Bearer-Token auf – dieses Token fangen wir ab:
-#   1. primär über die Authorization-Header der WebClient-Requests
+# mit einem Bearer-Token auf - dieses Token fangen wir ab:
+#   1. primaer ueber die Authorization-Header der WebClient-Requests
 #      (WebResourceRequested-Event),
-#   2. sekundär über einen Scan von session-/localStorage nach
+#   2. sekundaer ueber einen Scan von session-/localStorage nach
 #      access_token-/JWT-Mustern.
 # Jeder Kandidat wird gegen die API verifiziert, bevor er verwendet wird.
 # Das WebView2-Profil ist persistent -> Folge-Anmeldungen laufen i. d. R.
@@ -368,7 +369,7 @@ function Get-TokenViaSso {
     Add-Type -AssemblyName System.Drawing
 
     if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
-        throw 'SSO-Modus benötigt einen STA-Thread (WebView2/WinForms). Bitte im Royal-TS-Kontext ausführen oder Auth Mode "Password" verwenden.'
+        throw 'SSO-Modus benoetigt einen STA-Thread (WebView2/WinForms). Bitte im Royal-TS-Kontext ausfuehren oder Auth Mode "Password" verwenden.'
     }
 
     # --- WebView2-SDK-Assemblies suchen ------------------------------------
@@ -399,7 +400,7 @@ function Get-TokenViaSso {
                     $coreDll     = $co
                     break
                 } catch {
-                    Write-DebugLog ('WebView2-Assembly aus "{0}" nicht ladbar ({1}) – nächster Kandidat.' -f $d, $_.Exception.Message)
+                    Write-DebugLog ('WebView2-Assembly aus "{0}" nicht ladbar ({1}) - naechster Kandidat.' -f $d, $_.Exception.Message)
                 }
             }
         }
@@ -421,7 +422,7 @@ function Get-TokenViaSso {
         }
     }
     if (-not $winFormsDll) {
-        throw ('WebView2-SDK-Assemblies nicht gefunden/ladbar und Auto-Download von nuget.org fehlgeschlagen (Proxy/kein Internet?). Manuell "tools\Install-WebView2Sdk.ps1" aus dem Repo ausführen (installiert nach {0}\lib) oder Pfad über die Umgebungsvariable PLEASANT_WEBVIEW2_DIR vorgeben. Alternativ Auth Mode "Password" verwenden.' -f $script:AppDir)
+        throw ('WebView2-SDK-Assemblies nicht gefunden/ladbar und Auto-Download von nuget.org fehlgeschlagen (Proxy/kein Internet?). Manuell "tools\Install-WebView2Sdk.ps1" aus dem Repo ausfuehren (installiert nach {0}\lib) oder Pfad ueber die Umgebungsvariable PLEASANT_WEBVIEW2_DIR vorgeben. Alternativ Auth Mode "Password" verwenden.' -f $script:AppDir)
     }
     Write-DebugLog ('WebView2-SDK geladen aus: {0}' -f (Split-Path -Parent $winFormsDll))
 
@@ -450,8 +451,26 @@ function Get-TokenViaSso {
 })()
 '@
 
+    # --- Start-URL bestimmen: Custom Property > /WebClient > Server-Root ----
+    $ssoUrl = $null
+    if ($Config.ContainsKey('SsoLoginUrl') -and $Config.SsoLoginUrl -and $Config.SsoLoginUrl -ne 'TODO') {
+        $ssoUrl = $Config.SsoLoginUrl
+        Write-DebugLog ('SSO-Login-URL aus Custom Property: {0}' -f $ssoUrl)
+    } else {
+        $ssoUrl = $Config.ServerUrl + '/WebClient'
+        try {
+            $probe = Invoke-Http -Method 'GET' -Uri $ssoUrl
+            if ($probe.Status -eq 404) {
+                $ssoUrl = $Config.ServerUrl + '/'
+                Write-DebugLog 'Kein WebClient unter /WebClient (404) - nutze Server-Root als Login-Seite.'
+            }
+        } catch {
+            Write-DebugLog ('WebClient-Probe fehlgeschlagen ({0}) - bleibe bei /WebClient.' -f $_.Exception.Message)
+        }
+    }
+
     $script:SsoForm = New-Object System.Windows.Forms.Form
-    $script:SsoForm.Text          = 'Pleasant Password Server - SSO-Anmeldung (Fenster schließt sich automatisch)'
+    $script:SsoForm.Text          = 'Pleasant Password Server - SSO-Anmeldung (Fenster schliesst sich automatisch)'
     $script:SsoForm.Size          = New-Object System.Drawing.Size(1050, 800)
     $script:SsoForm.StartPosition = 'CenterScreen'
 
@@ -527,10 +546,11 @@ function Get-TokenViaSso {
         } catch { }
     })
 
+    $script:SsoStartUrl = $ssoUrl
     $script:SsoForm.add_Shown({
         $script:SsoTimer.Start()
         try {
-            $script:SsoWebView.Source = [Uri]($Config.ServerUrl + '/WebClient')
+            $script:SsoWebView.Source = [Uri]$script:SsoStartUrl
         } catch {
             $script:SsoState.Error = 'WebView2 konnte nicht gestartet werden: ' + $_.Exception.Message
             $script:SsoForm.Close()
@@ -548,14 +568,14 @@ function Get-TokenViaSso {
 
     if ($script:SsoState.Error) { throw $script:SsoState.Error }
     if (-not $script:SsoState.Token) {
-        throw 'SSO-Anmeldung abgebrochen oder es konnte kein API-Token aus der WebClient-Sitzung übernommen werden (Details ggf. mit "Debug Log" = Yes nachvollziehen).'
+        throw 'SSO-Anmeldung abgebrochen oder es konnte kein API-Token aus der WebClient-Sitzung uebernommen werden (Details ggf. mit "Debug Log" = Yes nachvollziehen).'
     }
-    Write-DebugLog 'SSO-Token erfolgreich übernommen.'
+    Write-DebugLog 'SSO-Token erfolgreich uebernommen.'
     return @{ Token = $script:SsoState.Token; ExpiresAt = [long]$script:SsoState.ExpiresAt }
 }
 
 # ---------------------------------------------------------------------------
-# Orchestrierung: Cache -> (SSO | Password) -> Cache füllen
+# Orchestrierung: Cache -> (SSO | Password) -> Cache fuellen
 # ---------------------------------------------------------------------------
 function Get-AccessToken {
     $cached = Get-CachedToken
@@ -567,14 +587,14 @@ function Get-AccessToken {
 }
 
 # GET auf die Pleasant-API inkl. automatischer Re-Authentifizierung,
-# falls ein gecachtes Token serverseitig nicht mehr gültig ist.
+# falls ein gecachtes Token serverseitig nicht mehr gueltig ist.
 function Invoke-PleasantApi {
     param([string]$Path)
     $token = Get-AccessToken
     $uri = $Config.ServerUrl + $Path
     $r = Invoke-Http -Method 'GET' -Uri $uri -Headers @{ Accept = 'application/json'; Authorization = 'Bearer ' + $token }
     if ($r.Status -eq 401 -or $r.Status -eq 403) {
-        Write-DebugLog ('HTTP {0} – Token verworfen, neue Anmeldung.' -f $r.Status)
+        Write-DebugLog ('HTTP {0} - Token verworfen, neue Anmeldung.' -f $r.Status)
         Clear-CachedToken
         $token = Get-AccessToken
         $r = Invoke-Http -Method 'GET' -Uri $uri -Headers @{ Accept = 'application/json'; Authorization = 'Bearer ' + $token }

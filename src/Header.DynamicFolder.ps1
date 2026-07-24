@@ -7,6 +7,7 @@
 $Config = @{
     ScriptKind       = 'Folder'
     ServerUrl        = '$CustomProperty.ServerURL$'
+    SsoLoginUrl      = '$CustomProperty.SSOLoginURL$'
     AuthMode         = '$CustomProperty.AuthMode$'
     OmitDomain       = '$CustomProperty.OmitDomain$'
     IgnoreSsl        = '$CustomProperty.IgnoreSSLErrors$'

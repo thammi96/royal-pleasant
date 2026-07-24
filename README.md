@@ -49,6 +49,7 @@ ausführen oder den Pfad per Umgebungsvariable `PLEASANT_WEBVIEW2_DIR` vorgeben.
 | Property | Werte | Bedeutung |
 |---|---|---|
 | **Server URL** | z. B. `https://pwd.firma.tld:10001` | Basis-URL des Pleasant-Servers (ohne `/WebClient`) |
+| **SSO Login URL** | leer = automatisch | Login-Seite fürs SSO-Fenster. Leer: erst `/WebClient`, bei 404 automatisch Server-Root (leitet z. B. auf `/Account/SignIn` um). Explizit setzen, wenn die Login-Seite woanders liegt. |
 | **Auth Mode** | `SSO` \| `Password` | `SSO` = SAML via WebView2, `Password` = OAuth2 Password Grant |
 | **Omit Domain** | Yes/No | Nur Password-Modus: Domäne aus dem Benutzernamen entfernen |
 | **Ignore SSL Errors** | Yes/No | Zertifikatsprüfung deaktivieren (nur Test!) |

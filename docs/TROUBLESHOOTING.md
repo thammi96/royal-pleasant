@@ -28,6 +28,18 @@ WebView2 **Evergreen Runtime** fehlt (nicht zu verwechseln mit dem SDK):
 https://developer.microsoft.com/microsoft-edge/webview2/ → Evergreen Bootstrapper.
 Auf Windows 10/11 mit aktuellem Edge normalerweise vorhanden.
 
+### SSO-Fenster zeigt „Server Error / 404 – Requested URL: /WebClient"
+Der Server hostet kein WebClient-SPA unter `/WebClient` (klassische Pleasant-
+Web-UI). Das Skript probiert das inzwischen selbst aus und weicht bei 404
+automatisch auf die Server-Root aus (die auf `/Account/SignIn` umleitet).
+Alternativ die Login-Seite explizit über die Custom Property **SSO Login URL**
+setzen, z. B. `https://safe.firma.tld/Account/SignIn`.
+
+**Wichtig:** Die klassische Web-UI ist Cookie-basiert. Ob sich daraus ein
+API-Bearer-Token abfangen lässt, hängt von der Serverversion ab — wenn nach
+erfolgreichem Login kein Token gefunden wird (Fenster bleibt offen), siehe
+nächster Abschnitt.
+
 ### Anmeldefenster erscheint, schließt sich aber nach Login nicht
 Das Skript hat kein verwertbares Token aus der WebClient-Sitzung abfangen können.
 

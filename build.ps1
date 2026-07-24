@@ -20,6 +20,27 @@ $common = Read-Src 'Common.ps1'
 $folderScript = (Read-Src 'Header.DynamicFolder.ps1') + "`r`n" + $common + "`r`n" + (Read-Src 'Body.DynamicFolder.ps1')
 $dyncredScript = (Read-Src 'Header.DynamicCredential.ps1') + "`r`n" + $common + "`r`n" + (Read-Src 'Body.DynamicCredential.ps1')
 
+# Royal TS uebergibt Skripte je nach Version ohne BOM an Windows PowerShell 5.1,
+# das dann ANSI annimmt -> Umlaute/typografische Zeichen wuerden zerschossen.
+# Deshalb: eingebettete Skripte strikt auf ASCII transliterieren.
+function ConvertTo-Ascii([string]$Text) {
+    $map = @(
+        @('ä', 'ae'), @('ö', 'oe'), @('ü', 'ue'), @('Ä', 'Ae'), @('Ö', 'Oe'), @('Ü', 'Ue'), @('ß', 'ss'),
+        @([string][char]0x201E, '"'), @([string][char]0x201C, '"'), @([string][char]0x201D, '"'),
+        @([string][char]0x201A, "'"), @([string][char]0x2018, "'"), @([string][char]0x2019, "'"),
+        @([string][char]0x2013, '-'), @([string][char]0x2014, '-'), @([string][char]0x2026, '...'),
+        @([string][char]0x2192, '->')
+    )
+    foreach ($pair in $map) { $Text = $Text.Replace([string]$pair[0], [string]$pair[1]) }
+    $nonAscii = [regex]::Matches($Text, '[^\x00-\x7F]') | ForEach-Object { $_.Value } | Sort-Object -Unique
+    if ($nonAscii) {
+        throw ('Nicht-ASCII-Zeichen nach Transliteration uebrig: ' + (($nonAscii | ForEach-Object { '{0} (U+{1:X4})' -f $_, [int][char]$_ }) -join ', '))
+    }
+    return $Text
+}
+$folderScript  = ConvertTo-Ascii $folderScript
+$dyncredScript = ConvertTo-Ascii $dyncredScript
+
 # Syntax-Check beider generierter Skripte
 foreach ($pair in @(@('DynamicFolder', $folderScript), @('DynamicCredential', $dyncredScript))) {
     $tokens = $null; $errors = $null
@@ -54,6 +75,7 @@ $rdfe = [ordered]@{
             Notes            = $notesHtml
             CustomProperties = @(
                 [ordered]@{ Name = 'Server URL';        Type = 'URL';   Value = 'TODO' }
+                [ordered]@{ Name = 'SSO Login URL';     Type = 'URL';   Value = '' }
                 [ordered]@{ Name = 'Auth Mode';         Type = 'Text';  Value = 'SSO' }
                 [ordered]@{ Name = 'Omit Domain';       Type = 'YesNo'; Value = 'False' }
                 [ordered]@{ Name = 'Ignore SSL Errors'; Type = 'YesNo'; Value = 'False' }
