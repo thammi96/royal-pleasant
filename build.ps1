@@ -1,7 +1,8 @@
 ﻿# ============================================================================
-#  build.ps1 – erzeugt aus den Quelldateien in src\ die importierbare
-#  Royal-TS-Datei dist\Pleasant Password (PowerShell SSO).rdfe sowie die
-#  beiden vollständigen Skripte (praktisch zum Debuggen im Script-Editor).
+#  build.ps1 – erzeugt aus den Quelldateien in src\ die importierbaren
+#  Royal-TS-Dateien dist\*.rdfx (aktuelles XML-Format) und dist\*.rdfe
+#  (Legacy-JSON) sowie die beiden vollständigen Skripte (praktisch zum
+#  Debuggen im Script-Editor).
 # ============================================================================
 [CmdletBinding()]
 param()
@@ -74,8 +75,61 @@ $rdfePath = Join-Path $distDir 'Pleasant Password (PowerShell SSO).rdfe'
 $json = $rdfe | ConvertTo-Json -Depth 10
 [System.IO.File]::WriteAllText($rdfePath, $json, (New-Object System.Text.UTF8Encoding($false)))
 
+# --- rdfx (aktuelles XML-Format, Struktur wie Toolbox-Samples) --------------
+$meta = $rdfe.Objects[0]
+$xml  = New-Object System.Xml.XmlDocument
+$root = $xml.AppendChild($xml.CreateElement('DynamicFolderExport'))
+[void]$root.AppendChild($xml.CreateElement('Name')).AppendChild($xml.CreateTextNode('Dynamic Folder Export'))
+$objects = $root.AppendChild($xml.CreateElement('Objects'))
+$obj = $objects.AppendChild($xml.CreateElement('DynamicFolderExportObject'))
+
+function Add-XmlText([System.Xml.XmlElement]$Parent, [string]$Name, [string]$Text) {
+    $el = $Parent.AppendChild($xml.CreateElement($Name))
+    if ($Text) { [void]$el.AppendChild($xml.CreateTextNode($Text)) }
+    return $el
+}
+function Add-XmlCData([System.Xml.XmlElement]$Parent, [string]$Name, [string]$Text) {
+    $el = $Parent.AppendChild($xml.CreateElement($Name))
+    [void]$el.AppendChild($xml.CreateCDataSection($Text))
+    return $el
+}
+
+[void](Add-XmlText $obj 'Type' 'DynamicFolder')
+[void](Add-XmlText $obj 'Name' $meta.Name)
+[void](Add-XmlText $obj 'Description' $meta.Description)
+[void](Add-XmlCData $obj 'Notes' $meta.Notes)
+$propsEl = $obj.AppendChild($xml.CreateElement('CustomProperties'))
+foreach ($p in $meta.CustomProperties) {
+    $pEl = $propsEl.AppendChild($xml.CreateElement('CustomProperty'))
+    [void](Add-XmlText $pEl 'Name' $p.Name)
+    [void](Add-XmlText $pEl 'Type' $p.Type)
+    [void](Add-XmlText $pEl 'Value' $p.Value)
+}
+[void](Add-XmlText $obj 'ScriptInterpreter' 'powershell')
+[void](Add-XmlCData $obj 'Script' $folderScript)
+[void](Add-XmlText $obj 'DynamicCredentialScriptInterpreter' 'powershell')
+[void](Add-XmlCData $obj 'DynamicCredentialScript' $dyncredScript)
+[void](Add-XmlText $obj 'DynamicFolderScriptTokenMode' 'ReplaceInline')
+[void](Add-XmlText $obj 'DynamicFolderScriptEnvironmentPrefix' 'DynFolder_')
+$tok1 = $obj.AppendChild($xml.CreateElement('DynamicFolderScriptTokens'))
+[void]$tok1.AppendChild($xml.CreateElement('Token'))
+[void](Add-XmlText $obj 'DynamicCredentialScriptTokenMode' 'ReplaceInline')
+[void](Add-XmlText $obj 'DynamicCredentialScriptEnvironmentPrefix' 'DynCredential_')
+$tok2 = $obj.AppendChild($xml.CreateElement('DynamicCredentialScriptTokens'))
+[void]$tok2.AppendChild($xml.CreateElement('Token'))
+
+$rdfxPath = Join-Path $distDir 'Pleasant Password (PowerShell SSO).rdfx'
+$settings = New-Object System.Xml.XmlWriterSettings
+$settings.Indent = $true
+$settings.OmitXmlDeclaration = $true
+$settings.Encoding = New-Object System.Text.UTF8Encoding($true)
+$writer = [System.Xml.XmlWriter]::Create($rdfxPath, $settings)
+$xml.Save($writer)
+$writer.Close()
+
 [System.IO.File]::WriteAllText((Join-Path $distDir 'DynamicFolder.full.ps1'), $folderScript, (New-Object System.Text.UTF8Encoding($true)))
 [System.IO.File]::WriteAllText((Join-Path $distDir 'DynamicCredential.full.ps1'), $dyncredScript, (New-Object System.Text.UTF8Encoding($true)))
 
-Write-Host "OK: $rdfePath"
+Write-Host "OK: $rdfxPath"
+Write-Host "OK: $rdfePath (Legacy)"
 Write-Host 'OK: dist\DynamicFolder.full.ps1, dist\DynamicCredential.full.ps1'

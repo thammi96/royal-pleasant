@@ -292,6 +292,45 @@ function Get-TokenViaPasswordGrant {
 }
 
 # ---------------------------------------------------------------------------
+# WebView2-SDK-Bootstrap: Royal TS führt PowerShell-Skripte mit Windows
+# PowerShell 5.1 (.NET Framework) aus. Die WebView2 Evergreen *Runtime* ist
+# auf Win 10/11 vorhanden, aber die managed SDK-Wrapper (net462) fehlen ->
+# beim ersten SSO-Lauf automatisch von nuget.org nachladen.
+# ---------------------------------------------------------------------------
+function Install-WebView2SdkAuto {
+    $libDir  = Join-Path $script:AppDir 'lib'
+    $version = '1.0.2592.51'
+    Write-DebugLog ('WebView2-SDK nicht gefunden - lade Version {0} von nuget.org ...' -f $version)
+    $zip = Join-Path $env:TEMP ('webview2-sdk-' + $version + '.zip')
+    $tmp = Join-Path $env:TEMP ('webview2-sdk-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        Invoke-WebRequest -Uri ('https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/' + $version) -OutFile $zip -UseBasicParsing -TimeoutSec 120
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        $netDir = Get-ChildItem -Path (Join-Path $tmp 'lib') -Directory |
+            Where-Object { $_.Name -like 'net4*' } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if (-not $netDir) { throw 'Kein net4x-Build im WebView2-NuGet-Paket gefunden.' }
+        New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+        Copy-Item -Path (Join-Path $netDir.FullName 'Microsoft.Web.WebView2.Core.dll')     -Destination $libDir -Force
+        Copy-Item -Path (Join-Path $netDir.FullName 'Microsoft.Web.WebView2.WinForms.dll') -Destination $libDir -Force
+        $l64 = Join-Path $tmp 'runtimes\win-x64\native\WebView2Loader.dll'
+        if (Test-Path $l64) { Copy-Item $l64 -Destination $libDir -Force }
+        $l86 = Join-Path $tmp 'runtimes\win-x86\native\WebView2Loader.dll'
+        if (Test-Path $l86) {
+            $x86Dir = Join-Path $libDir 'x86'
+            New-Item -ItemType Directory -Path $x86Dir -Force | Out-Null
+            Copy-Item $l86 -Destination $x86Dir -Force
+        }
+        Write-DebugLog ('WebView2-SDK installiert nach {0}' -f $libDir)
+        return $libDir
+    } finally {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Auth-Modus "SSO": Die Pleasant-API kennt offiziell nur den Password-Grant.
 # Für SAML-SSO-Konten öffnen wir daher ein WebView2-Fenster mit dem Pleasant
 # WebClient. Die SAML-Anmeldung (inkl. MFA/Conditional Access) übernimmt der
@@ -347,7 +386,23 @@ function Get-TokenViaSso {
         }
     }
     if (-not $winFormsDll) {
-        throw ('WebView2-SDK-Assemblies nicht gefunden/ladbar. Einmalig "tools\Install-WebView2Sdk.ps1" aus dem Repo ausführen (installiert nach {0}\lib) oder Pfad über die Umgebungsvariable PLEASANT_WEBVIEW2_DIR vorgeben. Alternativ Auth Mode "Password" verwenden.' -f $script:AppDir)
+        # Automatischer Bootstrap von nuget.org, danach erneuter Ladeversuch
+        try {
+            $autoLib = Install-WebView2SdkAuto
+            $co = Join-Path $autoLib 'Microsoft.Web.WebView2.Core.dll'
+            $wf = Join-Path $autoLib 'Microsoft.Web.WebView2.WinForms.dll'
+            if ((Test-Path $co) -and (Test-Path $wf)) {
+                Add-Type -Path $co -ErrorAction Stop
+                Add-Type -Path $wf -ErrorAction Stop
+                $coreDll     = $co
+                $winFormsDll = $wf
+            }
+        } catch {
+            Write-DebugLog ('Auto-Download des WebView2-SDK fehlgeschlagen: {0}' -f $_.Exception.Message)
+        }
+    }
+    if (-not $winFormsDll) {
+        throw ('WebView2-SDK-Assemblies nicht gefunden/ladbar und Auto-Download von nuget.org fehlgeschlagen (Proxy/kein Internet?). Manuell "tools\Install-WebView2Sdk.ps1" aus dem Repo ausführen (installiert nach {0}\lib) oder Pfad über die Umgebungsvariable PLEASANT_WEBVIEW2_DIR vorgeben. Alternativ Auth Mode "Password" verwenden.' -f $script:AppDir)
     }
     Write-DebugLog ('WebView2-SDK geladen aus: {0}' -f (Split-Path -Parent $winFormsDll))
 

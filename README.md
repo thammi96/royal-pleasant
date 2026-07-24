@@ -30,19 +30,19 @@ Für Umgebungen ohne SSO-Zwang (oder Konten mit *„Allow Exception For Direct S
 
 - Royal TS (V6/V7), Windows 10/11
 - Pleasant Password Server 7.x+ (API v5)
-- Für den SSO-Modus:
-  - WebView2 Evergreen Runtime (auf Win 10/11 üblicherweise vorhanden)
-  - Einmalig pro Benutzer das WebView2-SDK bereitstellen:
+- Für den SSO-Modus: WebView2 Evergreen **Runtime** — die ist auf praktisch jedem Windows-10/11-PC vorhanden (kommt mit Edge/Teams/Office mit), da muss nichts installiert werden.
+
+Zusätzlich brauchen die Skripte die managed WebView2-**SDK-Wrapper** (net462-DLLs), weil Royal TS PowerShell-Skripte mit Windows PowerShell 5.1 ausführt. Die lädt das Skript **beim ersten SSO-Lauf automatisch** von nuget.org nach `%LOCALAPPDATA%\RoyalTS-PleasantPPS\lib`. Ohne Internetzugang/nuget.org: einmalig manuell
 
 ```bash
 powershell -ExecutionPolicy Bypass -File tools/Install-WebView2Sdk.ps1
 ```
 
-Das legt die benötigten DLLs unter `%LOCALAPPDATA%\RoyalTS-PleasantPPS\lib` ab (alternativ Pfad per Umgebungsvariable `PLEASANT_WEBVIEW2_DIR` vorgeben).
+ausführen oder den Pfad per Umgebungsvariable `PLEASANT_WEBVIEW2_DIR` vorgeben.
 
 ### 2. Dynamic Folder importieren
 
-`dist/Pleasant Password (PowerShell SSO).rdfe` in Royal TS importieren (Datei → Importieren → Royal TS Objekte) oder per Drag & Drop in ein Dokument ziehen.
+`dist/Pleasant Password (PowerShell SSO).rdfx` in Royal TS importieren (**Data → Import → Dynamic Folder File (.rdfx)**). Für ältere Royal-TS-Versionen liegt zusätzlich das Legacy-Format `.rdfe` bei.
 
 ### 3. Custom Properties konfigurieren
 
@@ -76,9 +76,9 @@ src/                  Quell-Skripte (Header + gemeinsamer Kern + Body)
   Common.ps1          Auth (SSO/Password), Token-Cache, HTTP, API-Wrapper
   Header.*.ps1        Royal-TS-Replacement-Tokens → $Config
   Body.*.ps1          Ordnerbaum → rJSON bzw. Passwort-Abruf
-build.ps1             Baut dist/*.rdfe + Voll-Skripte, inkl. Syntax-Check
-dist/                 Fertige Artefakte (rdfe zum Import, Voll-Skripte zum Debuggen)
-tools/                Install-WebView2Sdk.ps1
+build.ps1             Baut dist/*.rdfx + *.rdfe + Voll-Skripte, inkl. Syntax-Check
+dist/                 Fertige Artefakte (rdfx zum Import, rdfe Legacy, Voll-Skripte zum Debuggen)
+tools/                Install-WebView2Sdk.ps1 (nur nötig ohne Internet/nuget.org)
 docs/                 Troubleshooting & technische Details
 ```
 

@@ -5,18 +5,23 @@ Erster Schritt bei jedem Problem: Custom Property **Debug Log = Yes** setzen und
 
 ## SSO-Modus
 
-### „WebView2-SDK-Assemblies nicht gefunden/ladbar"
-Einmalig `tools\Install-WebView2Sdk.ps1` ausführen. Das Skript lädt das
-Microsoft.Web.WebView2-NuGet-Paket und legt die net462-DLLs unter
-`%LOCALAPPDATA%\RoyalTS-PleasantPPS\lib` ab. Alternativ einen eigenen Pfad über
-die Umgebungsvariable `PLEASANT_WEBVIEW2_DIR` setzen (Ordner muss
-`Microsoft.Web.WebView2.Core.dll`, `Microsoft.Web.WebView2.WinForms.dll` und
-`WebView2Loader.dll` enthalten).
+### „WebView2-SDK-Assemblies nicht gefunden/ladbar und Auto-Download fehlgeschlagen"
+Normalfall: Beim ersten SSO-Lauf lädt das Skript die benötigten net462-DLLs
+automatisch von nuget.org nach `%LOCALAPPDATA%\RoyalTS-PleasantPPS\lib`.
+Schlägt das fehl (Proxy, kein Internet, nuget.org gesperrt):
 
-Hintergrund: Royal TS führt PowerShell-Skripte mit Windows PowerShell 5.1
-(.NET Framework) aus. Die WebView2-DLLs, die Royal TS selbst mitbringt, sind
-je nach Version .NET-(Core)-Builds und lassen sich dort nicht laden — deshalb
-der separate SDK-Download.
+- einmalig `tools\Install-WebView2Sdk.ps1` von einem Rechner mit Internet
+  ausführen bzw. den `lib`-Ordner dorthin kopieren, oder
+- einen eigenen Pfad über die Umgebungsvariable `PLEASANT_WEBVIEW2_DIR`
+  setzen (Ordner muss `Microsoft.Web.WebView2.Core.dll`,
+  `Microsoft.Web.WebView2.WinForms.dll` und `WebView2Loader.dll` enthalten).
+
+Hintergrund: Die WebView2 Evergreen **Runtime** (Browser-Engine) ist über
+Edge/Teams/Office praktisch überall vorhanden — es geht hier nur um die
+managed **SDK-Wrapper**. Royal TS führt PowerShell-Skripte mit Windows
+PowerShell 5.1 (.NET Framework) aus; die WebView2-DLLs, die Royal TS selbst
+mitbringt, sind je nach Version .NET-(Core)-Builds und lassen sich dort nicht
+laden — deshalb der separate SDK-Download.
 
 ### „WebView2-Initialisierung fehlgeschlagen"
 WebView2 **Evergreen Runtime** fehlt (nicht zu verwechseln mit dem SDK):
