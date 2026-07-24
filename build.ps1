@@ -15,10 +15,12 @@ function Read-Src([string]$Name) {
     Get-Content -Path (Join-Path $root "src\$Name") -Raw -Encoding UTF8
 }
 
-$common = Read-Src 'Common.ps1'
+$common    = Read-Src 'Common.ps1'
+$webclient = Read-Src 'WebClientMode.ps1'
+$core = $common + "`r`n" + $webclient
 
-$folderScript = (Read-Src 'Header.DynamicFolder.ps1') + "`r`n" + $common + "`r`n" + (Read-Src 'Body.DynamicFolder.ps1')
-$dyncredScript = (Read-Src 'Header.DynamicCredential.ps1') + "`r`n" + $common + "`r`n" + (Read-Src 'Body.DynamicCredential.ps1')
+$folderScript = (Read-Src 'Header.DynamicFolder.ps1') + "`r`n" + $core + "`r`n" + (Read-Src 'Body.DynamicFolder.ps1')
+$dyncredScript = (Read-Src 'Header.DynamicCredential.ps1') + "`r`n" + $core + "`r`n" + (Read-Src 'Body.DynamicCredential.ps1')
 
 # Royal TS uebergibt Skripte je nach Version ohne BOM an Windows PowerShell 5.1,
 # das dann ANSI annimmt -> Umlaute/typografische Zeichen wuerden zerschossen.
@@ -76,7 +78,7 @@ $rdfe = [ordered]@{
             CustomProperties = @(
                 [ordered]@{ Name = 'Server URL';        Type = 'URL';   Value = 'TODO' }
                 [ordered]@{ Name = 'SSO Login URL';     Type = 'URL';   Value = '' }
-                [ordered]@{ Name = 'Auth Mode';         Type = 'Text';  Value = 'SSO' }
+                [ordered]@{ Name = 'Auth Mode';         Type = 'Text';  Value = 'WebClient' }
                 [ordered]@{ Name = 'Omit Domain';       Type = 'YesNo'; Value = 'False' }
                 [ordered]@{ Name = 'Ignore SSL Errors'; Type = 'YesNo'; Value = 'False' }
                 [ordered]@{ Name = 'Use Token Cache';   Type = 'YesNo'; Value = 'True' }

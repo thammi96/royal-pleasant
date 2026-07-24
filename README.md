@@ -5,10 +5,20 @@ PowerShell-Neuimplementierung des [Royal Apps Toolbox-Samples](https://github.co
 | | Python-Original (Toolbox) | Dieses Projekt |
 |---|---|---|
 | Sprache | Python 2/3 (+ pip-Module) | PowerShell 5.1 (keine Abhängigkeiten auf Zielsystem) |
-| Auth | Nur OAuth2 Password Grant + OTP-Prompt | **SAML SSO via WebView2** und Password Grant + OTP |
-| MFA | Tkinter-Eingabefenster | IdP-nativ (SSO) bzw. WinForms-Dialog (Password) |
-| Token-Handling | Anmeldung bei **jedem** Abruf | **DPAPI-verschlüsselter Token-Cache**, Silent SSO |
-| API | v4 + v5 | v5 (Pleasant 7.x+) |
+| Auth | Nur OAuth2 Password Grant + OTP-Prompt | **3 Modi:** WebClient-Cookie (SAML-SSO), SSO-Bearer, Password+OTP |
+| MFA | Tkinter-Eingabefenster | IdP-nativ (SSO/WebClient) bzw. WinForms-Dialog (Password) |
+| Token-Handling | Anmeldung bei **jedem** Abruf | **DPAPI-verschlüsselter Token-/Cookie-Cache**, Silent SSO |
+| API | v4 + v5 | REST v5 **oder** interne WebClient-API (Cookie) |
+
+## Die drei Auth-Modi
+
+| Modus | Wann | Wie |
+|---|---|---|
+| **`WebClient`** ← Default | Server mit **erzwungenem SAML-SSO** (Entra/Azure AD), REST-API-Password-Grant deaktiviert | SAML-Login per WebView2, danach **Session-Cookie** → interne WebClient-API (`GetTree`, `CredentialListGrid`, `CopyPasswordPopup`). Passwörter kommen server-entschlüsselt zurück. |
+| **`SSO`** | Server, dessen WebClient ein **OAuth2-Bearer-Token** gegen `/api/v5` nutzt | Bearer-Token aus der WebView-Sitzung abfangen + verifizieren |
+| **`Password`** | Server mit aktivem **OAuth2 Password Grant** (kein SSO-Zwang, oder Direct-Sign-In-Ausnahme) | klassischer Password Grant inkl. `X-Pleasant-OTP`-MFA |
+
+> Für einen Pleasant-9.3-Server mit **erzwungenem Entra-SSO** ist **`WebClient`** in der Praxis der einzige funktionierende Modus — Analyse siehe [docs/SERVER-FINDINGS.md](docs/SERVER-FINDINGS.md).
 
 ## Hintergrund / Problemstellung
 
@@ -50,9 +60,9 @@ ausführen oder den Pfad per Umgebungsvariable `PLEASANT_WEBVIEW2_DIR` vorgeben.
 
 | Property | Werte | Bedeutung |
 |---|---|---|
-| **Server URL** | z. B. `https://pwd.firma.tld:10001` | Basis-URL des Pleasant-Servers (ohne `/WebClient`) |
-| **SSO Login URL** | leer = automatisch | Login-Seite fürs SSO-Fenster. Leer: erst `/WebClient`, bei 404 automatisch Server-Root (leitet z. B. auf `/Account/SignIn` um). Explizit setzen, wenn die Login-Seite woanders liegt. |
-| **Auth Mode** | `SSO` \| `Password` | `SSO` = SAML via WebView2, `Password` = OAuth2 Password Grant |
+| **Server URL** | z. B. `https://pwd.firma.tld` | Basis-URL des Pleasant-Servers (ohne `/WebClient`) |
+| **SSO Login URL** | leer = automatisch | Login-Seite fürs Anmeldefenster. Leer: probiert `/WebClient/Main`, dann `/WebClient`, dann Server-Root. Explizit setzen, wenn die Login-Seite woanders liegt. |
+| **Auth Mode** | `WebClient` \| `SSO` \| `Password` | siehe Tabelle „Die drei Auth-Modi" oben |
 | **Omit Domain** | Yes/No | Nur Password-Modus: Domäne aus dem Benutzernamen entfernen |
 | **Ignore SSL Errors** | Yes/No | Zertifikatsprüfung deaktivieren (nur Test!) |
 | **Use Token Cache** | Yes/No | DPAPI-Token-Cache verwenden (empfohlen: Yes) |
@@ -76,12 +86,13 @@ Im Modus `Password` müssen dem Dynamic Folder außerdem Zugangsdaten zugewiesen
 
 ```
 src/                  Quell-Skripte (Header + gemeinsamer Kern + Body)
-  Common.ps1          Auth (SSO/Password), Token-Cache, HTTP, API-Wrapper
+  Common.ps1          Auth (WebClient/SSO/Password), WebView2, Token-Cache, HTTP
+  WebClientMode.ps1   Cookie-Modus: Login, GetTree, CredentialListGrid, CopyPasswordPopup
   Header.*.ps1        Royal-TS-Replacement-Tokens → $Config
   Body.*.ps1          Ordnerbaum → rJSON bzw. Passwort-Abruf
 build.ps1             Baut dist/*.rdfx + *.rdfe + Voll-Skripte, inkl. Syntax-Check
 dist/                 Fertige Artefakte (rdfx zum Import, rdfe Legacy, Voll-Skripte zum Debuggen)
-tools/                Install-WebView2Sdk.ps1 (nur nötig ohne Internet/nuget.org)
+tools/                Install-WebView2Sdk.ps1, discover-webclient-api.js (Debug)
 docs/                 Troubleshooting & technische Details
 ```
 

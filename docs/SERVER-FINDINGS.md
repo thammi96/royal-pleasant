@@ -62,11 +62,19 @@ Danach läuft die Integration im **Auth Mode = Password** ohne Browser,
 „always on", inkl. MFA-Header falls konfiguriert. Sauberster, wartbarer,
 herstellerkonformer Weg.
 
-### B) Cookie-Modus gegen die interne WebClient-API  (Fallback, fragil)
-Nach SSO-Login im WebView die `action-url`-Endpunkte des WebClients mit der
-Session-Cookie replayen (Baum + Passwort anzeigen). Undokumentiert,
-DOM-/Anti-Forgery-abhängig, bricht bei Pleasant-Updates. Nur wenn A) nicht
-durchsetzbar ist.
+### B) Cookie-Modus gegen die interne WebClient-API  ← **implementiert** (Auth Mode `WebClient`)
+Nach SAML-Login im WebView werden die Session-Cookies übernommen und die interne
+WebClient-API per Cookie + Anti-Forgery-Token angesprochen:
+
+- Baum:     `GET  /WebClient/Main/GetTree?id=<id>` → `[{id,name,hasChildren,...}]` (rekursiv)
+- Einträge: `POST /WebClient/CredentialListGrid/Select?CredentialGroupId=<id>` (+ `__RequestVerificationToken`)
+- Passwort: `GET  /WebClient/Main/CopyPasswordPopup?credentialId=<id>` → `response` = Klartext
+
+Bestätigt: `IsEncrypted=false`, `EncryptedCredentialKey=null` → keine E2E-
+Verschlüsselung, Cookie-Replay liefert Klartext-Passwörter. **Einschränkung:**
+undokumentiert & DOM-/Anti-Forgery-abhängig → kann bei Pleasant-Updates brechen;
+die Endpunkte sind zentral in `src/WebClientMode.ps1` gekapselt. Bei Einträgen
+mit `IsEncrypted=true` gibt der Modus einen klaren Fehler aus.
 
 ### C) SSO Proxy
 Der „SSO Proxy"/„Proxy Server" von Pleasant ist eine Endanwender-Funktion zum

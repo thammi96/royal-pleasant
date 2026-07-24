@@ -10,6 +10,11 @@ if (-not $Config.CredentialId) {
     throw 'Keine Credential-ID übergeben (Replacement Token DynamicCredential.EffectiveID war leer).'
 }
 
-$password = Invoke-PleasantApi ('/api/v5/rest/entries/' + $Config.CredentialId + '/password')
+if ($Config.AuthMode -match '^(?i)webclient$') {
+    $session = Get-WebClientSession
+    $password = Get-WebClientPassword -Session $session -CredentialId $Config.CredentialId
+} else {
+    $password = Invoke-PleasantApi ('/api/v5/rest/entries/' + $Config.CredentialId + '/password')
+}
 
 @{ Password = [string]$password } | ConvertTo-Json -Compress

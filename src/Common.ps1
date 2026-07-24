@@ -33,8 +33,8 @@ function Initialize-Config {
         throw 'Custom Property "Server URL" ist nicht gesetzt (Dynamic Folder -> Eigenschaften -> Custom Properties).'
     }
     $Config.ServerUrl = $Config.ServerUrl.TrimEnd('/')
-    if ($Config.AuthMode -notmatch '^(?i)(sso|password)$') {
-        throw ('Custom Property "Auth Mode" muss "SSO" oder "Password" sein (aktuell: "{0}").' -f $Config.AuthMode)
+    if ($Config.AuthMode -notmatch '^(?i)(sso|password|webclient)$') {
+        throw ('Custom Property "Auth Mode" muss "WebClient", "SSO" oder "Password" sein (aktuell: "{0}").' -f $Config.AuthMode)
     }
     Write-DebugLog ('Start – Server={0} AuthMode={1} PS={2}/{3}' -f $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
 }
@@ -344,15 +344,11 @@ function Install-WebView2SdkAuto {
 # Das WebView2-Profil ist persistent -> Folge-Anmeldungen laufen i. d. R.
 # ohne erneute Passworteingabe (Silent SSO), danach greift der Token-Cache.
 # ---------------------------------------------------------------------------
-function Get-TokenViaSso {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
+# WebView2-SDK-Assemblies suchen, laden und den nativen Loader auffindbar
+# machen. Von SSO-Bearer- UND WebClient-Cookie-Modus genutzt.
+function Initialize-WebView2Sdk {
+    if ($script:WebView2Ready) { return }
 
-    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
-        throw 'SSO-Modus benötigt einen STA-Thread (WebView2/WinForms). Bitte im Royal-TS-Kontext ausführen oder Auth Mode "Password" verwenden.'
-    }
-
-    # --- WebView2-SDK-Assemblies suchen ------------------------------------
     $searchDirs = New-Object System.Collections.Generic.List[string]
     if ($env:PLEASANT_WEBVIEW2_DIR) { $searchDirs.Add($env:PLEASANT_WEBVIEW2_DIR) }
     $searchDirs.Add((Join-Path $script:AppDir 'lib'))
@@ -380,7 +376,7 @@ function Get-TokenViaSso {
                     $coreDll     = $co
                     break
                 } catch {
-                    Write-DebugLog ('WebView2-Assembly aus "{0}" nicht ladbar ({1}) – nächster Kandidat.' -f $d, $_.Exception.Message)
+                    Write-DebugLog ('WebView2-Assembly aus "{0}" nicht ladbar ({1}) - naechster Kandidat.' -f $d, $_.Exception.Message)
                 }
             }
         }
@@ -402,7 +398,7 @@ function Get-TokenViaSso {
         }
     }
     if (-not $winFormsDll) {
-        throw ('WebView2-SDK-Assemblies nicht gefunden/ladbar und Auto-Download von nuget.org fehlgeschlagen (Proxy/kein Internet?). Manuell "tools\Install-WebView2Sdk.ps1" aus dem Repo ausführen (installiert nach {0}\lib) oder Pfad über die Umgebungsvariable PLEASANT_WEBVIEW2_DIR vorgeben. Alternativ Auth Mode "Password" verwenden.' -f $script:AppDir)
+        throw ('WebView2-SDK-Assemblies nicht gefunden/ladbar und Auto-Download von nuget.org fehlgeschlagen (Proxy/kein Internet?). Manuell "tools\Install-WebView2Sdk.ps1" aus dem Repo ausführen (installiert nach {0}\lib) oder Pfad über die Umgebungsvariable PLEASANT_WEBVIEW2_DIR vorgeben.' -f $script:AppDir)
     }
     Write-DebugLog ('WebView2-SDK geladen aus: {0}' -f (Split-Path -Parent $winFormsDll))
 
@@ -411,6 +407,19 @@ function Get-TokenViaSso {
     $libDir = Split-Path -Parent $coreDll
     $loaderDir = if ([Environment]::Is64BitProcess) { $libDir } else { Join-Path $libDir 'x86' }
     if (Test-Path $loaderDir) { $env:PATH = $loaderDir + ';' + $env:PATH }
+
+    $script:WebView2Ready = $true
+}
+
+function Get-TokenViaSso {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+        throw 'SSO-Modus benötigt einen STA-Thread (WebView2/WinForms). Bitte im Royal-TS-Kontext ausführen oder Auth Mode "Password" verwenden.'
+    }
+
+    Initialize-WebView2Sdk
 
     # --- Zustand + UI ------------------------------------------------------
     $script:SsoState = @{
@@ -557,6 +566,110 @@ function Get-TokenViaSso {
     }
     Write-DebugLog 'SSO-Token erfolgreich übernommen.'
     return @{ Token = $script:SsoState.Token; ExpiresAt = [long]$script:SsoState.ExpiresAt }
+}
+
+# ---------------------------------------------------------------------------
+# WebView2-SSO-Login für den Cookie-Modus (Auth Mode = WebClient):
+# öffnet den WebClient, lässt den Benutzer per SAML anmelden und übernimmt
+# nach erfolgreicher Anmeldung die Session-Cookies in eine PowerShell-
+# WebSession. Nutzt dieselbe WebView2-Infrastruktur wie Get-TokenViaSso.
+# ---------------------------------------------------------------------------
+function Invoke-WebClientSsoLogin {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+        throw 'WebClient-Modus benötigt einen STA-Thread (WebView2/WinForms). Im Royal-TS-Kontext ausführen.'
+    }
+
+    Initialize-WebView2Sdk   # lädt/bootstrappt die WebView2-Assemblies
+
+    $script:WcState = @{ Cookies = $null; Error = $null; Done = $false }
+
+    $loginUrl = $Config.ServerUrl + '/WebClient/Main'
+    if ($Config.ContainsKey('SsoLoginUrl') -and $Config.SsoLoginUrl -and $Config.SsoLoginUrl -ne 'TODO') {
+        $loginUrl = $Config.SsoLoginUrl
+    }
+
+    $script:WcForm = New-Object System.Windows.Forms.Form
+    $script:WcForm.Text          = 'Pleasant Password Server - Anmeldung (Fenster schliesst sich automatisch)'
+    $script:WcForm.Size          = New-Object System.Drawing.Size(1050, 800)
+    $script:WcForm.StartPosition = 'CenterScreen'
+
+    $script:WcWebView = New-Object Microsoft.Web.WebView2.WinForms.WebView2
+    $script:WcWebView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $props = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties
+    $props.UserDataFolder = Join-Path $script:AppDir 'WebView2'
+    $script:WcWebView.CreationProperties = $props
+    $script:WcForm.Controls.Add($script:WcWebView)
+
+    $script:WcWebView.add_CoreWebView2InitializationCompleted({
+        param($sender, $e)
+        if (-not $e.IsSuccess) {
+            $script:WcState.Error = 'WebView2-Initialisierung fehlgeschlagen (Evergreen Runtime installiert?).'
+            $script:WcForm.Close()
+        }
+    })
+
+    # Nach jeder Navigation prüfen: sind wir angemeldet? (URL = WebClient/Main,
+    # nicht mehr SignIn/SAML) -> Cookies auslesen und Fenster schließen.
+    $script:WcWebView.add_NavigationCompleted({
+        param($sender, $e)
+        try {
+            $src = [string]$script:WcWebView.Source
+            if ($src -match '/WebClient' -and $src -notmatch 'SignIn|SingleSignOn|login\.microsoftonline|sts\.windows') {
+                $core = $script:WcWebView.CoreWebView2
+                $task = $core.CookieManager.GetCookiesAsync($Config.ServerUrl)
+                $task.ContinueWith({
+                    param($t)
+                    try {
+                        $list = New-Object System.Collections.Generic.List[object]
+                        foreach ($c in $t.Result) {
+                            $list.Add([pscustomobject]@{ Name = $c.Name; Value = $c.Value; Domain = $c.Domain; Path = $c.Path })
+                        }
+                        # nur schließen, wenn eine Session-Cookie (Auth) dabei ist
+                        if ($list.Count -gt 0) {
+                            $script:WcState.Cookies = $list
+                            $script:WcForm.BeginInvoke([Action]{ $script:WcForm.Close() }) | Out-Null
+                        }
+                    } catch {
+                        $script:WcState.Error = $_.Exception.Message
+                        $script:WcForm.BeginInvoke([Action]{ $script:WcForm.Close() }) | Out-Null
+                    }
+                }) | Out-Null
+            }
+        } catch { }
+    })
+
+    $script:WcForm.add_Shown({
+        try { $script:WcWebView.Source = [Uri]$loginUrl }
+        catch {
+            $script:WcState.Error = 'WebView2 konnte nicht gestartet werden: ' + $_.Exception.Message
+            $script:WcForm.Close()
+        }
+    })
+
+    try { [void]$script:WcForm.ShowDialog() }
+    finally {
+        try { $script:WcWebView.Dispose() } catch { }
+        $script:WcForm.Dispose()
+    }
+
+    if ($script:WcState.Error) { throw $script:WcState.Error }
+    if (-not $script:WcState.Cookies -or $script:WcState.Cookies.Count -eq 0) {
+        throw 'Anmeldung abgebrochen oder keine Session-Cookies übernommen.'
+    }
+
+    $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $srvHost = ([Uri]$Config.ServerUrl).Host
+    foreach ($c in $script:WcState.Cookies) {
+        try {
+            $ck = New-Object System.Net.Cookie($c.Name, $c.Value, $(if ($c.Path) { $c.Path } else { '/' }), $(if ($c.Domain) { $c.Domain.TrimStart('.') } else { $srvHost }))
+            $session.Cookies.Add($ck)
+        } catch { }
+    }
+    Write-DebugLog ('WebClient-Login ok, {0} Cookies übernommen.' -f $script:WcState.Cookies.Count)
+    return $session
 }
 
 # ---------------------------------------------------------------------------

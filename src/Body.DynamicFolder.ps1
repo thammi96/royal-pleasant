@@ -66,19 +66,24 @@ function Convert-Folder {
 Initialize-Config
 Initialize-Http
 
-$tree = Invoke-PleasantApi '/api/v5/rest/folders/'
-
-$storeObjects = New-Object System.Collections.ArrayList
-foreach ($group in @($tree)) {
-    if (-not $group) { continue }
-    if ($group.ParentId -eq '00000000-0000-0000-0000-000000000000') {
-        # Root-Ordner selbst nicht anlegen, nur dessen Inhalt
-        foreach ($obj in (Get-FolderObjects $group)) { [void]$storeObjects.Add($obj) }
-    } else {
-        [void]$storeObjects.Add((Convert-Folder $group))
+if ($Config.AuthMode -match '^(?i)webclient$') {
+    # Cookie-Modus: interne WebClient-API (für SSO-Server ohne API-Token)
+    $storeObjects = Get-WebClientStoreObjects
+} else {
+    # REST-API (Bearer): SSO-Bearer-Capture oder Password-Grant
+    $tree = Invoke-PleasantApi '/api/v5/rest/folders/'
+    $storeObjects = New-Object System.Collections.ArrayList
+    foreach ($group in @($tree)) {
+        if (-not $group) { continue }
+        if ($group.ParentId -eq '00000000-0000-0000-0000-000000000000') {
+            # Root-Ordner selbst nicht anlegen, nur dessen Inhalt
+            foreach ($obj in (Get-FolderObjects $group)) { [void]$storeObjects.Add($obj) }
+        } else {
+            [void]$storeObjects.Add((Convert-Folder $group))
+        }
     }
 }
 
-Write-DebugLog ('Ordnerbaum geladen: {0} Objekte auf oberster Ebene.' -f $storeObjects.Count)
+Write-DebugLog ('Ordnerbaum geladen: {0} Objekte auf oberster Ebene.' -f @($storeObjects).Count)
 
 @{ Objects = $storeObjects } | ConvertTo-Json -Depth 100 -Compress
