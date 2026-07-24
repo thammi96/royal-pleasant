@@ -106,12 +106,14 @@ function Get-AntiForgeryToken {
 # --- SSO-Login per WebView2, danach Cookies übernehmen ----------------------
 function Get-WebClientSession {
     $cached = Get-CachedCookieSession
-    if ($cached) { return $cached }
+    if ($cached) { Write-DebugLog 'Verwende gecachte Cookie-Session.'; return $cached }
 
     $session = Invoke-WebClientSsoLogin   # in Common.ps1 (WebView2), liefert WebSession
+    Write-DebugLog 'Pruefe Session gegen /WebClient/Main ...'
     if (-not (Test-WebClientSession $session)) {
-        throw 'WebClient-Anmeldung fehlgeschlagen: Session nach SSO nicht gültig.'
+        throw 'WebClient-Anmeldung fehlgeschlagen: Session nach SSO nicht gültig (Cookies uebernommen, aber /WebClient/Main antwortet nicht angemeldet).'
     }
+    Write-DebugLog 'Session gueltig.'
     # Cookies für den Cache einsammeln
     $cookieList = New-Object System.Collections.Generic.List[object]
     foreach ($c in $session.Cookies.GetCookies([Uri]$Config.ServerUrl)) { $cookieList.Add($c) }
@@ -142,7 +144,11 @@ function Get-WebClientEntries {
     $r = Invoke-WebRequest -Uri $uri -Method POST -WebSession $Session -Body $body -UseBasicParsing -TimeoutSec 60 `
          -Headers @{ 'X-Requested-With' = 'XMLHttpRequest' } -ContentType 'application/x-www-form-urlencoded'
     $data = $r.Content | ConvertFrom-Json
-    if ($data.PSObject.Properties['Data']) { return @($data.Data) }
+    if ($data.PSObject.Properties['Data'] -and $data.Data) {
+        $entries = @($data.Data)
+        Write-DebugLog ('  Ordner {0}: {1} Eintraege.' -f $FolderId, $entries.Count)
+        return $entries
+    }
     return @()
 }
 
@@ -169,7 +175,9 @@ function Get-WebClientChildren {
     $r = Invoke-WebRequest -Uri $uri -WebSession $Session -UseBasicParsing -TimeoutSec 60 -Headers @{ 'X-Requested-With' = 'XMLHttpRequest' }
     $nodes = $r.Content | ConvertFrom-Json
     if ($null -eq $nodes) { return @() }
-    return @($nodes)
+    $arr = @($nodes)
+    Write-DebugLog ('GetTree id="{0}" -> {1} Kinder.' -f $Id, $arr.Count)
+    return $arr
 }
 
 function ConvertTo-HtmlNotes {
@@ -225,9 +233,13 @@ function Build-WebClientFolder {
 function Get-WebClientStoreObjects {
     $session = Get-WebClientSession
     $anti = Get-AntiForgeryToken $session
+    Write-DebugLog ('Anti-Forgery-Token {0}' -f $(if ($anti) { 'gefunden' } else { 'NICHT gefunden' }))
+
+    $topNodes = @(Get-WebClientChildren -Session $session -Id '')
+    Write-DebugLog ('Wurzel: {0} Top-Level-Knoten.' -f $topNodes.Count)
 
     $store = New-Object System.Collections.ArrayList
-    foreach ($top in (Get-WebClientChildren -Session $session -Id '')) {
+    foreach ($top in $topNodes) {
         if ([string]$top.name -eq 'Root') {
             # Root aufloesen: dessen Unterordner + Eintraege direkt oben einhaengen
             foreach ($child in (Get-WebClientChildren -Session $session -Id $top.id)) {

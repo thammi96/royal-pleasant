@@ -584,12 +584,14 @@ function Invoke-WebClientSsoLogin {
 
     Initialize-WebView2Sdk   # lädt/bootstrappt die WebView2-Assemblies
 
-    $script:WcState = @{ Cookies = $null; Error = $null; Done = $false }
+    $script:WcState = @{ Cookies = $null; Error = $null; Busy = $false; Ticks = 0 }
+    $script:WcServerHost = ([Uri]$Config.ServerUrl).Host
 
     $loginUrl = $Config.ServerUrl + '/WebClient/Main'
     if ($Config.ContainsKey('SsoLoginUrl') -and $Config.SsoLoginUrl -and $Config.SsoLoginUrl -ne 'TODO') {
         $loginUrl = $Config.SsoLoginUrl
     }
+    Write-DebugLog ('WebClient-Login startet, URL={0}, Host={1}' -f $loginUrl, $script:WcServerHost)
 
     $script:WcForm = New-Object System.Windows.Forms.Form
     $script:WcForm.Text          = 'Pleasant Password Server - Anmeldung (Fenster schliesst sich automatisch)'
@@ -606,58 +608,99 @@ function Invoke-WebClientSsoLogin {
     $script:WcWebView.add_CoreWebView2InitializationCompleted({
         param($sender, $e)
         if (-not $e.IsSuccess) {
-            $script:WcState.Error = 'WebView2-Initialisierung fehlgeschlagen (Evergreen Runtime installiert?).'
+            $msg = if ($e.InitializationException) { $e.InitializationException.Message } else { 'unbekannt' }
+            $script:WcState.Error = 'WebView2-Initialisierung fehlgeschlagen (Evergreen Runtime installiert?): ' + $msg
+            Write-DebugLog $script:WcState.Error
             $script:WcForm.Close()
+        } else {
+            Write-DebugLog 'WebView2 initialisiert.'
         }
     })
 
-    # Nach jeder Navigation prüfen: sind wir angemeldet? (URL = WebClient/Main,
-    # nicht mehr SignIn/SAML) -> Cookies auslesen und Fenster schließen.
-    $script:WcWebView.add_NavigationCompleted({
+    # Zur Nachvollziehbarkeit jede Navigation loggen
+    $script:WcWebView.add_NavigationStarting({
         param($sender, $e)
-        try {
-            $src = [string]$script:WcWebView.Source
-            if ($src -match '/WebClient' -and $src -notmatch 'SignIn|SingleSignOn|login\.microsoftonline|sts\.windows') {
-                $core = $script:WcWebView.CoreWebView2
-                $task = $core.CookieManager.GetCookiesAsync($Config.ServerUrl)
-                $task.ContinueWith({
-                    param($t)
-                    try {
-                        $list = New-Object System.Collections.Generic.List[object]
-                        foreach ($c in $t.Result) {
-                            $list.Add([pscustomobject]@{ Name = $c.Name; Value = $c.Value; Domain = $c.Domain; Path = $c.Path })
-                        }
-                        # nur schließen, wenn eine Session-Cookie (Auth) dabei ist
-                        if ($list.Count -gt 0) {
-                            $script:WcState.Cookies = $list
-                            $script:WcForm.BeginInvoke([Action]{ $script:WcForm.Close() }) | Out-Null
-                        }
-                    } catch {
-                        $script:WcState.Error = $_.Exception.Message
-                        $script:WcForm.BeginInvoke([Action]{ $script:WcForm.Close() }) | Out-Null
-                    }
-                }) | Out-Null
-            }
-        } catch { }
+        try { Write-DebugLog ('Navigation -> {0}' -f $e.Uri) } catch { }
     })
 
+    # Timer prüft auf UI-Thread den Anmeldezustand und liest die Cookies
+    # SYNCHRON aus (message-pump via DoEvents), das ist in PowerShell 5.1
+    # zuverlässiger als eine TPL-Continuation auf einem Fremd-Thread.
+    $script:WcTimer = New-Object System.Windows.Forms.Timer
+    $script:WcTimer.Interval = 700
+    $script:WcTimer.add_Tick({
+        if ($script:WcState.Busy) { return }
+        $script:WcState.Busy = $true
+        try {
+            $script:WcState.Ticks++
+            $core = $script:WcWebView.CoreWebView2
+            if (-not $core) { return }
+            $src = [string]$core.Source
+            if (-not $src) { return }
+
+            $onOurHost  = $src -match [regex]::Escape($script:WcServerHost)
+            $onAuthPage = $src -match '(?i)SignIn|SingleSignOn|/SAML|/Account/|login\.microsoftonline|\.windows\.net|oauth2|/adfs'
+
+            # alle 5 Ticks (~3,5 s) den aktuellen Zustand loggen, damit man im
+            # Log sieht, wo die Anmeldung gerade steht
+            if (($script:WcState.Ticks % 5) -eq 1) {
+                Write-DebugLog ('Warte auf Login... aktuelle URL={0} (ourHost={1}, authPage={2})' -f $src, $onOurHost, $onAuthPage)
+            }
+
+            if ($onOurHost -and -not $onAuthPage) {
+                Write-DebugLog ('Angemeldet erkannt bei URL={0} - lese Cookies...' -f $src)
+                $task = $core.CookieManager.GetCookiesAsync($Config.ServerUrl)
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                while (-not $task.IsCompleted -and $sw.ElapsedMilliseconds -lt 5000) {
+                    [System.Windows.Forms.Application]::DoEvents()
+                    Start-Sleep -Milliseconds 25
+                }
+                if (-not $task.IsCompleted) {
+                    Write-DebugLog 'CookieManager-Timeout (5s) - erneuter Versuch beim naechsten Tick.'
+                    return
+                }
+                $cookies = $task.Result
+                $names = @()
+                $list = New-Object System.Collections.Generic.List[object]
+                foreach ($c in $cookies) {
+                    $list.Add([pscustomobject]@{ Name = $c.Name; Value = $c.Value; Domain = $c.Domain; Path = $c.Path })
+                    $names += $c.Name
+                }
+                Write-DebugLog ('CookieManager lieferte {0} Cookies: {1}' -f $list.Count, ($names -join ', '))
+                if ($list.Count -gt 0) {
+                    $script:WcState.Cookies = $list
+                    $script:WcTimer.Stop()
+                    $script:WcForm.Close()
+                }
+            }
+        } catch {
+            Write-DebugLog ('Fehler im Login-Timer: {0}' -f $_.Exception.Message)
+        } finally {
+            $script:WcState.Busy = $false
+        }
+    })
+
+    $script:WcStartUrl = $loginUrl
     $script:WcForm.add_Shown({
-        try { $script:WcWebView.Source = [Uri]$loginUrl }
+        $script:WcTimer.Start()
+        try { $script:WcWebView.Source = [Uri]$script:WcStartUrl }
         catch {
             $script:WcState.Error = 'WebView2 konnte nicht gestartet werden: ' + $_.Exception.Message
+            Write-DebugLog $script:WcState.Error
             $script:WcForm.Close()
         }
     })
 
     try { [void]$script:WcForm.ShowDialog() }
     finally {
+        try { $script:WcTimer.Stop(); $script:WcTimer.Dispose() } catch { }
         try { $script:WcWebView.Dispose() } catch { }
         $script:WcForm.Dispose()
     }
 
     if ($script:WcState.Error) { throw $script:WcState.Error }
     if (-not $script:WcState.Cookies -or $script:WcState.Cookies.Count -eq 0) {
-        throw 'Anmeldung abgebrochen oder keine Session-Cookies übernommen.'
+        throw 'Anmeldung abgebrochen oder keine Session-Cookies übernommen (mit Debug Log = Yes zeigt das Log die letzte URL).'
     }
 
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
