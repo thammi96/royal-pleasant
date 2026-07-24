@@ -35,9 +35,9 @@ function Save-CookieSession {
         $json = @{ saved = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); cookies = $arr } | ConvertTo-Json -Compress
         $enc = [System.Security.Cryptography.ProtectedData]::Protect([System.Text.Encoding]::UTF8.GetBytes($json), $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
         [System.IO.File]::WriteAllBytes((Get-CookieCachePath), $enc)
-        Write-DebugLog ('{0} Cookies DPAPI-gecacht.' -f $arr.Count)
+        Write-DebugLog ('{0} cookies cached (DPAPI).' -f $arr.Count)
     } catch {
-        Write-DebugLog ('Cookie-Cache schreiben fehlgeschlagen: {0}' -f $_.Exception.Message)
+        Write-DebugLog ('Writing cookie cache failed: {0}' -f $_.Exception.Message)
     }
 }
 
@@ -52,12 +52,12 @@ function Get-CachedCookieSession {
         $obj = [System.Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json
         $session = New-CookieWebSession $obj.cookies
         if (Test-WebClientSession $session) {
-            Write-DebugLog 'Cookie-Cache gültig.'
+            Write-DebugLog 'Cookie cache valid.'
             return $session
         }
-        Write-DebugLog 'Gecachte Cookies nicht mehr gültig.'
+        Write-DebugLog 'Cached cookies no longer valid.'
     } catch {
-        Write-DebugLog ('Cookie-Cache unlesbar: {0}' -f $_.Exception.Message)
+        Write-DebugLog ('Cookie cache unreadable: {0}' -f $_.Exception.Message)
     }
     return $null
 }
@@ -89,15 +89,15 @@ function Test-WebClientSession {
         $content = [string]$r.Content
         $trimmed = $content.TrimStart()
         $looksJson = ($trimmed.StartsWith('[') -or $trimmed.StartsWith('{'))
-        Write-DebugLog ('Session-Test GetTree: HTTP {0}, Laenge {1}, jsonish={2}' -f [int]$r.StatusCode, $content.Length, $looksJson)
+        Write-DebugLog ('Session test GetTree: HTTP {0}, length {1}, jsonish={2}' -f [int]$r.StatusCode, $content.Length, $looksJson)
         if (-not $looksJson) {
             $snippet = ($content -replace '\s+', ' ')
             if ($snippet.Length -gt 160) { $snippet = $snippet.Substring(0, 160) }
-            Write-DebugLog ('Session-Test: keine JSON-Antwort, Anfang: {0}' -f $snippet)
+            Write-DebugLog ('Session test: non-JSON response, start: {0}' -f $snippet)
         }
         return $looksJson
     } catch {
-        Write-DebugLog ('Session-Test Fehler: {0}' -f $_.Exception.Message)
+        Write-DebugLog ('Session test error: {0}' -f $_.Exception.Message)
         return $false
     }
 }
@@ -111,21 +111,21 @@ function Get-AntiForgeryToken {
         $m = [regex]::Match($r.Content, 'value="([^"]+)"[^>]*name="__RequestVerificationToken"')
     }
     if ($m.Success) { return $m.Groups[1].Value }
-    Write-DebugLog 'Kein __RequestVerificationToken in /WebClient/Main gefunden.'
+    Write-DebugLog 'No __RequestVerificationToken found in /WebClient/Main.'
     return $null
 }
 
 # --- SSO-Login per WebView2, danach Cookies übernehmen ----------------------
 function Get-WebClientSession {
     $cached = Get-CachedCookieSession
-    if ($cached) { Write-DebugLog 'Verwende gecachte Cookie-Session.'; return $cached }
+    if ($cached) { Write-DebugLog 'Using cached cookie session.'; return $cached }
 
-    $session = Invoke-WebClientSsoLogin   # in Common.ps1 (WebView2), liefert WebSession
-    Write-DebugLog 'Pruefe Session gegen /WebClient/Main ...'
+    $session = Invoke-WebClientSsoLogin   # in Common.ps1 (WebView2), returns WebSession
+    Write-DebugLog 'Testing session against GetTree ...'
     if (-not (Test-WebClientSession $session)) {
-        throw 'WebClient-Anmeldung fehlgeschlagen: Session nach SSO nicht gültig (Cookies uebernommen, aber /WebClient/Main antwortet nicht angemeldet).'
+        throw 'WebClient-Anmeldung fehlgeschlagen: Session nach SSO nicht gültig (Cookies uebernommen, aber GetTree antwortet nicht mit JSON).'
     }
-    Write-DebugLog 'Session gueltig.'
+    Write-DebugLog 'Session valid.'
     # Cookies für den Cache einsammeln
     $cookieList = New-Object System.Collections.Generic.List[object]
     foreach ($c in $session.Cookies.GetCookies([Uri]$Config.ServerUrl)) { $cookieList.Add($c) }
@@ -158,7 +158,7 @@ function Get-WebClientEntries {
     $data = $r.Content | ConvertFrom-Json
     if ($data.PSObject.Properties['Data'] -and $data.Data) {
         $entries = @($data.Data)
-        Write-DebugLog ('  Ordner {0}: {1} Eintraege.' -f $FolderId, $entries.Count)
+        Write-DebugLog ('  Folder {0}: {1} entries.' -f $FolderId, $entries.Count)
         return $entries
     }
     return @()
@@ -188,7 +188,7 @@ function Get-WebClientChildren {
     $nodes = $r.Content | ConvertFrom-Json
     if ($null -eq $nodes) { return @() }
     $arr = @($nodes)
-    Write-DebugLog ('GetTree id="{0}" -> {1} Kinder.' -f $Id, $arr.Count)
+    Write-DebugLog ('GetTree id="{0}" -> {1} children.' -f $Id, $arr.Count)
     return $arr
 }
 
@@ -245,10 +245,10 @@ function Build-WebClientFolder {
 function Get-WebClientStoreObjects {
     $session = Get-WebClientSession
     $anti = Get-AntiForgeryToken $session
-    Write-DebugLog ('Anti-Forgery-Token {0}' -f $(if ($anti) { 'gefunden' } else { 'NICHT gefunden' }))
+    Write-DebugLog ('Anti-forgery token {0}' -f $(if ($anti) { 'found' } else { 'NOT found' }))
 
     $topNodes = @(Get-WebClientChildren -Session $session -Id '')
-    Write-DebugLog ('Wurzel: {0} Top-Level-Knoten.' -f $topNodes.Count)
+    Write-DebugLog ('Root: {0} top-level nodes.' -f $topNodes.Count)
 
     $store = New-Object System.Collections.ArrayList
     foreach ($top in $topNodes) {

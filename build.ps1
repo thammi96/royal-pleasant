@@ -78,7 +78,7 @@ $rdfe = [ordered]@{
             CustomProperties = @(
                 [ordered]@{ Name = 'Server URL';        Type = 'URL';   Value = 'TODO' }
                 [ordered]@{ Name = 'SSO Login URL';     Type = 'URL';   Value = '' }
-                [ordered]@{ Name = 'Auth Mode';         Type = 'Text';  Value = 'WebClient' }
+                [ordered]@{ Name = 'Auth Mode';         Type = 'Text';  Value = 'SSO' }
                 [ordered]@{ Name = 'Omit Domain';       Type = 'YesNo'; Value = 'False' }
                 [ordered]@{ Name = 'Ignore SSL Errors'; Type = 'YesNo'; Value = 'False' }
                 [ordered]@{ Name = 'Use Token Cache';   Type = 'YesNo'; Value = 'True' }

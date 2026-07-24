@@ -36,7 +36,7 @@ function Initialize-Config {
     if ($Config.AuthMode -notmatch '^(?i)(sso|password|webclient)$') {
         throw ('Custom Property "Auth Mode" muss "WebClient", "SSO" oder "Password" sein (aktuell: "{0}").' -f $Config.AuthMode)
     }
-    Write-DebugLog ('Start – Server={0} AuthMode={1} PS={2}/{3}' -f $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
+    Write-DebugLog ('Start - Server={0} AuthMode={1} PS={2}/{3}' -f $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
 }
 
 # ---------------------------------------------------------------------------
@@ -132,12 +132,12 @@ function Get-CachedToken {
         $obj = [System.Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json
         $now = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         if ($now -lt ([long]$obj.expires_at - 60)) {
-            Write-DebugLog ('Token-Cache-Treffer, gültig bis {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds([long]$obj.expires_at).LocalDateTime)
+            Write-DebugLog ('Token cache hit, valid until {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds([long]$obj.expires_at).LocalDateTime)
             return [string]$obj.access_token
         }
-        Write-DebugLog 'Token im Cache ist abgelaufen.'
+        Write-DebugLog 'Cached token expired.'
     } catch {
-        Write-DebugLog ('Token-Cache unlesbar: {0}' -f $_.Exception.Message)
+        Write-DebugLog ('Token cache unreadable: {0}' -f $_.Exception.Message)
     }
     return $null
 }
@@ -152,9 +152,9 @@ function Save-CachedToken {
             [System.Text.Encoding]::UTF8.GetBytes($json), $null,
             [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
         [System.IO.File]::WriteAllBytes((Get-TokenCachePath), $enc)
-        Write-DebugLog ('Token im Cache gespeichert, gültig bis {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds($ExpiresAt).LocalDateTime)
+        Write-DebugLog ('Token cached, valid until {0:u}' -f [System.DateTimeOffset]::FromUnixTimeSeconds($ExpiresAt).LocalDateTime)
     } catch {
-        Write-DebugLog ('Token-Cache schreiben fehlgeschlagen: {0}' -f $_.Exception.Message)
+        Write-DebugLog ('Writing token cache failed: {0}' -f $_.Exception.Message)
     }
 }
 
@@ -265,7 +265,7 @@ function Get-TokenViaPasswordGrant {
 
     if (-not $r.Ok -and (Get-HeaderValue $r.Headers 'X-Pleasant-OTP') -eq 'required') {
         $provider = Get-HeaderValue $r.Headers 'X-Pleasant-OTP-Provider'
-        Write-DebugLog ('MFA erforderlich, Provider: {0}' -f $provider)
+        Write-DebugLog ('MFA required, provider: {0}' -f $provider)
         $otp = Show-InputDialog ('Einmalpasswort (OTP) für MFA eingeben' + $(if ($provider) { " - Provider: $provider" } else { '' }) + ':')
         if (-not $otp) { throw 'MFA abgebrochen: kein OTP eingegeben.' }
         $otpHeaders = @{ 'X-Pleasant-OTP-Provider' = $provider; 'X-Pleasant-OTP' = $otp }
@@ -300,7 +300,7 @@ function Get-TokenViaPasswordGrant {
 function Install-WebView2SdkAuto {
     $libDir  = Join-Path $script:AppDir 'lib'
     $version = '1.0.2592.51'
-    Write-DebugLog ('WebView2-SDK nicht gefunden - lade Version {0} von nuget.org ...' -f $version)
+    Write-DebugLog ('WebView2 SDK not found - downloading version {0} from nuget.org ...' -f $version)
     $zip = Join-Path $env:TEMP ('webview2-sdk-' + $version + '.zip')
     $tmp = Join-Path $env:TEMP ('webview2-sdk-' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -322,7 +322,7 @@ function Install-WebView2SdkAuto {
             New-Item -ItemType Directory -Path $x86Dir -Force | Out-Null
             Copy-Item $l86 -Destination $x86Dir -Force
         }
-        Write-DebugLog ('WebView2-SDK installiert nach {0}' -f $libDir)
+        Write-DebugLog ('WebView2 SDK installed to {0}' -f $libDir)
         return $libDir
     } finally {
         Remove-Item $zip -Force -ErrorAction SilentlyContinue
@@ -376,7 +376,7 @@ function Initialize-WebView2Sdk {
                     $coreDll     = $co
                     break
                 } catch {
-                    Write-DebugLog ('WebView2-Assembly aus "{0}" nicht ladbar ({1}) - naechster Kandidat.' -f $d, $_.Exception.Message)
+                    Write-DebugLog ('WebView2 assembly from "{0}" not loadable ({1}) - trying next.' -f $d, $_.Exception.Message)
                 }
             }
         }
@@ -394,13 +394,13 @@ function Initialize-WebView2Sdk {
                 $winFormsDll = $wf
             }
         } catch {
-            Write-DebugLog ('Auto-Download des WebView2-SDK fehlgeschlagen: {0}' -f $_.Exception.Message)
+            Write-DebugLog ('WebView2 SDK auto-download failed: {0}' -f $_.Exception.Message)
         }
     }
     if (-not $winFormsDll) {
         throw ('WebView2-SDK-Assemblies nicht gefunden/ladbar und Auto-Download von nuget.org fehlgeschlagen (Proxy/kein Internet?). Manuell "tools\Install-WebView2Sdk.ps1" aus dem Repo ausführen (installiert nach {0}\lib) oder Pfad über die Umgebungsvariable PLEASANT_WEBVIEW2_DIR vorgeben.' -f $script:AppDir)
     }
-    Write-DebugLog ('WebView2-SDK geladen aus: {0}' -f (Split-Path -Parent $winFormsDll))
+    Write-DebugLog ('WebView2 SDK loaded from: {0}' -f (Split-Path -Parent $winFormsDll))
 
     # Nativer WebView2Loader muss auffindbar sein (liegt neben den SDK-DLLs
     # bzw. in x86-Unterordner) -> Verzeichnis in PATH aufnehmen.
@@ -591,7 +591,7 @@ function Invoke-WebClientSsoLogin {
     if ($Config.ContainsKey('SsoLoginUrl') -and $Config.SsoLoginUrl -and $Config.SsoLoginUrl -ne 'TODO') {
         $loginUrl = $Config.SsoLoginUrl
     }
-    Write-DebugLog ('WebClient-Login startet, URL={0}, Host={1}' -f $loginUrl, $script:WcServerHost)
+    Write-DebugLog ('WebClient login starting, URL={0}, host={1}' -f $loginUrl, $script:WcServerHost)
 
     $script:WcForm = New-Object System.Windows.Forms.Form
     $script:WcForm.Text          = 'Pleasant Password Server - Anmeldung (Fenster schliesst sich automatisch)'
@@ -613,7 +613,7 @@ function Invoke-WebClientSsoLogin {
             Write-DebugLog $script:WcState.Error
             $script:WcForm.Close()
         } else {
-            Write-DebugLog 'WebView2 initialisiert.'
+            Write-DebugLog 'WebView2 initialized.'
         }
     })
 
@@ -644,11 +644,11 @@ function Invoke-WebClientSsoLogin {
             # alle 5 Ticks (~3,5 s) den aktuellen Zustand loggen, damit man im
             # Log sieht, wo die Anmeldung gerade steht
             if (($script:WcState.Ticks % 5) -eq 1) {
-                Write-DebugLog ('Warte auf Login... aktuelle URL={0} (ourHost={1}, authPage={2})' -f $src, $onOurHost, $onAuthPage)
+                Write-DebugLog ('Waiting for login... current URL={0} (ourHost={1}, authPage={2})' -f $src, $onOurHost, $onAuthPage)
             }
 
             if ($onOurHost -and -not $onAuthPage) {
-                Write-DebugLog ('Angemeldet erkannt bei URL={0} - lese Cookies...' -f $src)
+                Write-DebugLog ('Login detected at URL={0} - reading cookies...' -f $src)
                 $task = $core.CookieManager.GetCookiesAsync($Config.ServerUrl)
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
                 while (-not $task.IsCompleted -and $sw.ElapsedMilliseconds -lt 5000) {
@@ -656,7 +656,7 @@ function Invoke-WebClientSsoLogin {
                     Start-Sleep -Milliseconds 25
                 }
                 if (-not $task.IsCompleted) {
-                    Write-DebugLog 'CookieManager-Timeout (5s) - erneuter Versuch beim naechsten Tick.'
+                    Write-DebugLog 'CookieManager timeout (5s) - retrying on next tick.'
                     return
                 }
                 $cookies = $task.Result
@@ -666,7 +666,7 @@ function Invoke-WebClientSsoLogin {
                     $list.Add([pscustomobject]@{ Name = $c.Name; Value = $c.Value; Domain = $c.Domain; Path = $c.Path })
                     $names += $c.Name
                 }
-                Write-DebugLog ('CookieManager lieferte {0} Cookies: {1}' -f $list.Count, ($names -join ', '))
+                Write-DebugLog ('CookieManager returned {0} cookies: {1}' -f $list.Count, ($names -join ', '))
                 if ($list.Count -gt 0) {
                     $script:WcState.Cookies = $list
                     $script:WcTimer.Stop()
@@ -674,7 +674,7 @@ function Invoke-WebClientSsoLogin {
                 }
             }
         } catch {
-            Write-DebugLog ('Fehler im Login-Timer: {0}' -f $_.Exception.Message)
+            Write-DebugLog ('Error in login timer: {0}' -f $_.Exception.Message)
         } finally {
             $script:WcState.Busy = $false
         }
@@ -711,18 +711,224 @@ function Invoke-WebClientSsoLogin {
             $session.Cookies.Add($ck)
         } catch { }
     }
-    Write-DebugLog ('WebClient-Login ok, {0} Cookies übernommen.' -f $script:WcState.Cookies.Count)
+    Write-DebugLog ('WebClient login ok, {0} cookies captured.' -f $script:WcState.Cookies.Count)
     return $session
 }
 
 # ---------------------------------------------------------------------------
-# Orchestrierung: Cache -> (SSO | Password) -> Cache füllen
+# SSO via OAuth2 Authorization Code + PKCE (the flow the KeePass HUB desktop
+# client uses). Yields a real REST-API Bearer token even when the password
+# grant is disabled and SAML SSO is enforced.
+#   1. WebView2 opens /oauth2/authorize (SAML login happens at the IdP)
+#   2. server redirects to  kp4pps://callback?code=...&state=...
+#   3. we intercept that redirect, then exchange the code at /OAuth2/Token
+# Public client_id + redirect_uri are the KeePass client's (PKCE-protected,
+# no secret involved).
+# ---------------------------------------------------------------------------
+$script:KpClientId    = '{2279DD22-9B86-4CB0-AAC5-17028159160B}'
+$script:KpRedirectUri = 'kp4pps://callback'
+
+function New-PkcePair {
+    $bytes = New-Object 'System.Byte[]' 32
+    ([System.Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($bytes)
+    $verifier = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    $hash = ([System.Security.Cryptography.SHA256]::Create()).ComputeHash([System.Text.Encoding]::ASCII.GetBytes($verifier))
+    $challenge = [Convert]::ToBase64String($hash).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    return @{ Verifier = $verifier; Challenge = $challenge }
+}
+
+function New-RandomHex {
+    param([int]$Bytes = 16)
+    $b = New-Object 'System.Byte[]' $Bytes
+    ([System.Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($b)
+    return (($b | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Get-DeviceId {
+    try {
+        $mac = (Get-CimInstance Win32_NetworkAdapterConfiguration -ErrorAction Stop |
+                Where-Object { $_.IPEnabled -and $_.MACAddress } |
+                Select-Object -First 1).MACAddress
+        if ($mac) { return ($mac -replace '[:-]', '') }
+    } catch { }
+    return ((New-RandomHex 6).ToUpperInvariant())
+}
+
+function Get-TokenViaAuthCodePkce {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+        throw 'SSO mode needs an STA thread (WebView2/WinForms). Run inside Royal TS.'
+    }
+    Initialize-WebView2Sdk
+
+    $pkce       = New-PkcePair
+    $state      = New-RandomHex 16
+    $deviceId   = Get-DeviceId
+    $deviceName = $env:COMPUTERNAME
+    $clientUser = if ($Config.Username) { $Config.Username } else { $env:USERNAME }
+
+    $authorizePath = '/oauth2/authorize?client_id=' + [uri]::EscapeDataString($script:KpClientId) +
+        '&response_type=code&redirect_uri=' + [uri]::EscapeDataString($script:KpRedirectUri) +
+        '&code_challenge=' + [uri]::EscapeDataString($pkce.Challenge) +
+        '&code_challenge_method=S256' +
+        '&device_id=' + [uri]::EscapeDataString($deviceId) +
+        '&device_name=' + [uri]::EscapeDataString($deviceName) +
+        '&state=' + $state +
+        '&client_version_number=9.2.0.0' +
+        '&client_user=' + [uri]::EscapeDataString($clientUser)
+
+    # Prefer the SAML wrapper so the login is silent (no "sign in" button click).
+    $startUrl = $Config.ServerUrl + $authorizePath
+    try {
+        $signin = Invoke-Http -Method 'GET' -Uri ($Config.ServerUrl + '/Account/SignIn')
+        $m = [regex]::Match([string]$signin.Content, '/SAML/SingleSignOn\?Partner=([^"&]+)')
+        if ($m.Success) {
+            $startUrl = $Config.ServerUrl + '/SAML/SingleSignOn?Partner=' + $m.Groups[1].Value + '&ReturnUrl=' + [uri]::EscapeDataString($authorizePath)
+            Write-DebugLog 'Using SAML partner wrapper for silent SSO.'
+        }
+    } catch {
+        Write-DebugLog ('Could not read SAML partner ({0}), navigating to authorize directly.' -f $_.Exception.Message)
+    }
+
+    $script:AcState = @{ Code = $null; Error = $null; ExpectedState = $state }
+
+    # Handles the kp4pps://callback redirect (from either event)
+    $script:AcHandleCallback = {
+        param([string]$Uri)
+        try {
+            $q = ''
+            if ($Uri -match '\?(.*)$') { $q = $Matches[1] }
+            $code = $null; $st = $null
+            foreach ($kv in ($q -split '&')) {
+                $p = $kv -split '=', 2
+                if ($p[0] -eq 'code')  { $code = [uri]::UnescapeDataString($p[1]) }
+                if ($p[0] -eq 'state') { $st   = [uri]::UnescapeDataString($p[1]) }
+                if ($p[0] -eq 'error') { $script:AcState.Error = 'Authorize error: ' + [uri]::UnescapeDataString($p[1]) }
+            }
+            if ($code) {
+                if ($st -ne $script:AcState.ExpectedState) {
+                    $script:AcState.Error = 'State mismatch (possible CSRF) - aborting.'
+                    Write-DebugLog $script:AcState.Error
+                } else {
+                    $script:AcState.Code = $code
+                    Write-DebugLog 'Authorization code received.'
+                }
+            }
+        } catch {
+            $script:AcState.Error = 'Failed to parse callback: ' + $_.Exception.Message
+        }
+    }
+
+    $script:AcForm = New-Object System.Windows.Forms.Form
+    $script:AcForm.Text          = 'Pleasant Password Server - Sign in (window closes automatically)'
+    $script:AcForm.Size          = New-Object System.Drawing.Size(1050, 800)
+    $script:AcForm.StartPosition = 'CenterScreen'
+
+    $script:AcWebView = New-Object Microsoft.Web.WebView2.WinForms.WebView2
+    $script:AcWebView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $props = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties
+    $props.UserDataFolder = Join-Path $script:AppDir 'WebView2'
+    $script:AcWebView.CreationProperties = $props
+    $script:AcForm.Controls.Add($script:AcWebView)
+
+    $script:AcWebView.add_CoreWebView2InitializationCompleted({
+        param($sender, $e)
+        if (-not $e.IsSuccess) {
+            $msg = if ($e.InitializationException) { $e.InitializationException.Message } else { 'unknown' }
+            $script:AcState.Error = 'WebView2 initialization failed (Evergreen Runtime installed?): ' + $msg
+            Write-DebugLog $script:AcState.Error
+            $script:AcForm.Close()
+            return
+        }
+        Write-DebugLog 'WebView2 initialized.'
+        # Suppress the OS "open KeePass?" dialog for the custom scheme and grab the code
+        try {
+            $script:AcWebView.CoreWebView2.add_LaunchingExternalUriScheme({
+                param($s2, $e2)
+                try {
+                    $e2.Cancel = $true
+                    if ([string]$e2.Uri -like 'kp4pps:*') { & $script:AcHandleCallback ([string]$e2.Uri) }
+                } catch { }
+                if ($script:AcState.Code -or $script:AcState.Error) {
+                    $script:AcForm.BeginInvoke([Action]{ $script:AcForm.Close() }) | Out-Null
+                }
+            })
+            Write-DebugLog 'LaunchingExternalUriScheme handler attached.'
+        } catch {
+            Write-DebugLog ('LaunchingExternalUriScheme not available ({0}); relying on NavigationStarting.' -f $_.Exception.Message)
+        }
+    })
+
+    $script:AcWebView.add_NavigationStarting({
+        param($sender, $e)
+        $u = [string]$e.Uri
+        if ($u -like 'kp4pps:*') {
+            $e.Cancel = $true
+            Write-DebugLog 'Callback navigation intercepted.'
+            & $script:AcHandleCallback $u
+            if ($script:AcState.Code -or $script:AcState.Error) { $script:AcForm.Close() }
+        } else {
+            # log without query string (may carry sensitive values)
+            $bare = ($u -split '\?', 2)[0]
+            Write-DebugLog ('Navigation -> {0}' -f $bare)
+        }
+    })
+
+    $script:AcStartUrl = $startUrl
+    $script:AcForm.add_Shown({
+        try { $script:AcWebView.Source = [Uri]$script:AcStartUrl }
+        catch {
+            $script:AcState.Error = 'WebView2 could not start: ' + $_.Exception.Message
+            $script:AcForm.Close()
+        }
+    })
+
+    try { [void]$script:AcForm.ShowDialog() }
+    finally {
+        try { $script:AcWebView.Dispose() } catch { }
+        $script:AcForm.Dispose()
+    }
+
+    if ($script:AcState.Error) { throw $script:AcState.Error }
+    if (-not $script:AcState.Code) {
+        throw 'Sign-in cancelled or no authorization code received (enable Debug Log to see the last URL).'
+    }
+
+    # Exchange the authorization code for a bearer token (PKCE)
+    Write-DebugLog 'Exchanging authorization code for access token...'
+    $body = @{
+        grant_type    = 'authorization_code'
+        client_id     = $script:KpClientId
+        code          = $script:AcState.Code
+        code_verifier = $pkce.Verifier
+        redirect_uri  = $script:KpRedirectUri
+    }
+    $r = Invoke-Http -Method 'POST' -Uri ($Config.ServerUrl + '/OAuth2/Token') -Body $body -ContentType 'application/x-www-form-urlencoded'
+    if (-not $r.Ok) {
+        throw ('Token exchange failed: HTTP {0} {1}' -f $r.Status, $r.Content)
+    }
+    $tok = $r.Content | ConvertFrom-Json
+    if (-not $tok.access_token) { throw 'Token endpoint returned no access_token.' }
+
+    $now = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $expiresAt = $null
+    if ($tok.PSObject.Properties['expires_in'] -and $tok.expires_in) { $expiresAt = $now + [long]$tok.expires_in }
+    if (-not $expiresAt) { $expiresAt = Get-JwtExpiry $tok.access_token }
+    if (-not $expiresAt) { $expiresAt = $now + 1200 }
+
+    Write-DebugLog 'Access token acquired via authorization code + PKCE.'
+    return @{ Token = [string]$tok.access_token; ExpiresAt = [long]$expiresAt }
+}
+
+# ---------------------------------------------------------------------------
+# Orchestration: cache -> (SSO auth-code | password) -> fill cache
 # ---------------------------------------------------------------------------
 function Get-AccessToken {
     $cached = Get-CachedToken
     if ($cached) { return $cached }
 
-    $result = if ($Config.AuthMode -match '^(?i)sso$') { Get-TokenViaSso } else { Get-TokenViaPasswordGrant }
+    $result = if ($Config.AuthMode -match '^(?i)sso$') { Get-TokenViaAuthCodePkce } else { Get-TokenViaPasswordGrant }
     Save-CachedToken -Token $result.Token -ExpiresAt $result.ExpiresAt
     return $result.Token
 }
@@ -735,7 +941,7 @@ function Invoke-PleasantApi {
     $uri = $Config.ServerUrl + $Path
     $r = Invoke-Http -Method 'GET' -Uri $uri -Headers @{ Accept = 'application/json'; Authorization = 'Bearer ' + $token }
     if ($r.Status -eq 401 -or $r.Status -eq 403) {
-        Write-DebugLog ('HTTP {0} – Token verworfen, neue Anmeldung.' -f $r.Status)
+        Write-DebugLog ('HTTP {0} - token rejected, re-authenticating.' -f $r.Status)
         Clear-CachedToken
         $token = Get-AccessToken
         $r = Invoke-Http -Method 'GET' -Uri $uri -Headers @{ Accept = 'application/json'; Authorization = 'Bearer ' + $token }

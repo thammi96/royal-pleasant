@@ -84,6 +84,6 @@ if ($Config.AuthMode -match '^(?i)webclient$') {
     }
 }
 
-Write-DebugLog ('Ordnerbaum geladen: {0} Objekte auf oberster Ebene.' -f @($storeObjects).Count)
+Write-DebugLog ('Folder tree loaded: {0} objects at top level.' -f @($storeObjects).Count)
 
 @{ Objects = $storeObjects } | ConvertTo-Json -Depth 100 -Compress
