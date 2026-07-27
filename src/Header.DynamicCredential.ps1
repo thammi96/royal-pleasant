@@ -8,6 +8,7 @@ $Config = @{
     ServerUrl        = '$CustomProperty.ServerURL$'
     SsoLoginUrl      = '$CustomProperty.SSOLoginURL$'
     AuthMode         = '$CustomProperty.AuthMode$'
+    TokenVariant     = '$CustomProperty.TokenVariant$'
     OmitDomain       = '$CustomProperty.OmitDomain$'
     IgnoreSsl        = '$CustomProperty.IgnoreSSLErrors$'
     UseCache         = '$CustomProperty.UseTokenCache$'

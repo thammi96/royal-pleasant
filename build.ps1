@@ -79,6 +79,7 @@ $rdfe = [ordered]@{
                 [ordered]@{ Name = 'Server URL';        Type = 'URL';   Value = 'TODO' }
                 [ordered]@{ Name = 'SSO Login URL';     Type = 'URL';   Value = '' }
                 [ordered]@{ Name = 'Auth Mode';         Type = 'Text';  Value = 'SSO' }
+                [ordered]@{ Name = 'Token Variant';     Type = 'Text';  Value = '1' }
                 [ordered]@{ Name = 'Omit Domain';       Type = 'YesNo'; Value = 'False' }
                 [ordered]@{ Name = 'Ignore SSL Errors'; Type = 'YesNo'; Value = 'False' }
                 [ordered]@{ Name = 'Use Token Cache';   Type = 'YesNo'; Value = 'True' }

@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 # Bump this whenever the embedded script changes, so the debug log shows
 # unambiguously which version Royal TS is actually running.
-$script:BuildTag = 'v13'
+$script:BuildTag = 'v14'
 
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
@@ -21,12 +21,45 @@ if (-not (Test-Path $script:AppDir)) {
 
 # ---------------------------------------------------------------------------
 # Logging (nur wenn Custom Property "Debug Log" = Yes)
+# Jede Ausfuehrung schreibt eine EIGENE Datei unter ...\logs\ mit Zeitstempel
+# im Namen - so laesst sich der Log eines einzelnen Versuchs sauber
+# herauskopieren, ohne ihn aus einer wachsenden Sammeldatei zu fischen.
 # ---------------------------------------------------------------------------
+$script:LogDir  = Join-Path $script:AppDir 'logs'
+$script:LogFile = $null
+
+function Get-LogFilePath {
+    if ($script:LogFile) { return $script:LogFile }
+    try {
+        if (-not (Test-Path $script:LogDir)) { New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null }
+        $kind = if ($Config -and $Config.ScriptKind) { $Config.ScriptKind } else { 'Unknown' }
+        $script:LogFile = Join-Path $script:LogDir ('{0:yyyy-MM-dd_HH-mm-ss}_{1}_pid{2}.log' -f (Get-Date), $kind, $PID)
+        # Aeltere Logs aufraeumen (die neuesten 40 behalten)
+        try {
+            Get-ChildItem -Path $script:LogDir -Filter '*.log' -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -Skip 40 |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        } catch { }
+    } catch {
+        $script:LogFile = Join-Path $script:AppDir 'debug.log'
+    }
+    return $script:LogFile
+}
+
 function Write-DebugLog {
     param([string]$Message)
     if ($Config.DebugLog -ne 'Yes') { return }
-    $line = '{0:yyyy-MM-dd HH:mm:ss} [{1}] {2}' -f (Get-Date), $Config.ScriptKind, $Message
-    try { Add-Content -Path (Join-Path $script:AppDir 'debug.log') -Value $line -Encoding UTF8 } catch { }
+    $line = '{0:yyyy-MM-dd HH:mm:ss.fff} [{1}] {2}' -f (Get-Date), $Config.ScriptKind, $Message
+    try { Add-Content -Path (Get-LogFilePath) -Value $line -Encoding UTF8 } catch { }
+}
+
+# Haengt bei aktivem Debug-Log den Pfad der aktuellen Logdatei an eine
+# Fehlermeldung an, damit im Royal-TS-Fehlerdialog direkt steht, welche
+# Datei zu diesem Fehlversuch gehoert.
+function Add-LogHint {
+    param([string]$Message)
+    if ($Config.DebugLog -ne 'Yes') { return $Message }
+    return ($Message + [Environment]::NewLine + '--- Log: ' + (Get-LogFilePath))
 }
 
 # ---------------------------------------------------------------------------
@@ -40,7 +73,10 @@ function Initialize-Config {
     if ($Config.AuthMode -notmatch '^(?i)(sso|password|webclient)$') {
         throw ('Custom Property "Auth Mode" muss "WebClient", "SSO" oder "Password" sein (aktuell: "{0}").' -f $Config.AuthMode)
     }
-    Write-DebugLog ('Start - Build={0} Server={1} AuthMode={2} PS={3}/{4}' -f $script:BuildTag, $Config.ServerUrl, $Config.AuthMode, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
+    Write-DebugLog ('Start - Build={0} Server={1} AuthMode={2} TokenVariant={3}' -f $script:BuildTag, $Config.ServerUrl, $Config.AuthMode, $Config.TokenVariant)
+    Write-DebugLog ('Env   - PS={0}/{1} OS={2} Host={3} User={4} Apartment={5}' -f `
+        $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, [Environment]::OSVersion.Version,
+        $env:COMPUTERNAME, $env:USERNAME, [System.Threading.Thread]::CurrentThread.GetApartmentState())
 }
 
 # ---------------------------------------------------------------------------
@@ -115,33 +151,68 @@ function Invoke-Http {
 # bypassing Invoke-WebRequest quirks and disabling Expect: 100-continue. Used
 # for the OAuth token exchange where the body must arrive verbatim.
 function Invoke-FormPost {
-    param([string]$Uri, [string]$Body)
+    param(
+        [string]$Uri,
+        [string]$Body,
+        [string]$ContentType = 'application/x-www-form-urlencoded',
+        [hashtable]$ExtraHeaders = $null,
+        $CookieContainer = $null
+    )
     $req = [System.Net.HttpWebRequest]::Create($Uri)
     $req.Method = 'POST'
-    $req.ContentType = 'application/x-www-form-urlencoded'
+    if ($ContentType) { $req.ContentType = $ContentType }
     $req.Accept = 'application/json'
     $req.ServicePoint.Expect100Continue = $false
     $req.KeepAlive = $false
+    if ($CookieContainer) { $req.CookieContainer = $CookieContainer }
+    if ($ExtraHeaders) {
+        foreach ($k in $ExtraHeaders.Keys) {
+            if ($k -ieq 'Authorization') { $req.Headers['Authorization'] = [string]$ExtraHeaders[$k] }
+            else { $req.Headers.Add($k, [string]$ExtraHeaders[$k]) }
+        }
+    }
     if ($Config.IgnoreSsl -eq 'Yes') {
         $req.ServerCertificateValidationCallback = { $true }
     }
     $bytes = [System.Text.Encoding]::ASCII.GetBytes($Body)
     $req.ContentLength = $bytes.Length
+
+    # Den kompletten ausgehenden Request protokollieren (Request-Line, Header,
+    # Body-Bytes). Auth-Code und code_verifier sind Einmalwerte und nach dem
+    # Tausch wertlos -> unbedenklich und fuer die Fehlersuche entscheidend.
+    Write-DebugLog ('HTTP >>> POST {0}' -f $Uri)
+    Write-DebugLog ('HTTP >>> Content-Type: {0}; Content-Length: {1}' -f $req.ContentType, $bytes.Length)
+    foreach ($hk in $req.Headers.AllKeys) { Write-DebugLog ('HTTP >>> {0}: {1}' -f $hk, $req.Headers[$hk]) }
+    Write-DebugLog ('HTTP >>> body[{0}]: {1}' -f $Body.Length, $Body)
+
+    $result = $null
     try {
-        $rs = $req.GetRequestStream(); $rs.Write($bytes, 0, $bytes.Length); $rs.Close()
+        if ($bytes.Length -gt 0) {
+            $rs = $req.GetRequestStream(); $rs.Write($bytes, 0, $bytes.Length); $rs.Close()
+        }
         $resp = $req.GetResponse()
         $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
         $content = $sr.ReadToEnd(); $sr.Close()
-        return @{ Ok = $true; Status = [int]$resp.StatusCode; Content = $content }
+        $result = @{ Ok = $true; Status = [int]$resp.StatusCode; Content = $content; Response = $resp }
     } catch [System.Net.WebException] {
         $er = $_.Exception.Response
-        if ($er) {
-            $sr = New-Object System.IO.StreamReader($er.GetResponseStream())
-            $content = $sr.ReadToEnd(); $sr.Close()
-            return @{ Ok = $false; Status = [int]$er.StatusCode; Content = $content }
+        if (-not $er) {
+            Write-DebugLog ('HTTP <<< network failure: {0}' -f $_.Exception.Message)
+            throw ('Connection to "{0}" failed: {1}' -f $Uri, $_.Exception.Message)
         }
-        throw ('Connection to "{0}" failed: {1}' -f $Uri, $_.Exception.Message)
+        $sr = New-Object System.IO.StreamReader($er.GetResponseStream())
+        $content = $sr.ReadToEnd(); $sr.Close()
+        $result = @{ Ok = $false; Status = [int]$er.StatusCode; Content = $content; Response = $er }
     }
+
+    Write-DebugLog ('HTTP <<< HTTP {0}' -f $result.Status)
+    try {
+        foreach ($hk in $result.Response.Headers.AllKeys) {
+            Write-DebugLog ('HTTP <<< {0}: {1}' -f $hk, $result.Response.Headers[$hk])
+        }
+    } catch { }
+    Write-DebugLog ('HTTP <<< body: {0}' -f $result.Content)
+    return $result
 }
 
 function Get-HeaderValue {
@@ -832,7 +903,37 @@ function Get-TokenViaAuthCodePkce {
     $startUrl = $Config.ServerUrl + $authorizePath
     Write-DebugLog ('Authorize URL: {0}{1}' -f $Config.ServerUrl, ($authorizePath -replace '(code_challenge=)[^&]+', '$1<challenge>'))
 
-    $script:AcState = @{ Code = $null; Error = $null; ExpectedState = $state }
+    $script:AcState = @{ Code = $null; Error = $null; ExpectedState = $state; CookieJar = $null }
+
+    # Liest die Cookies der WebView2-Sitzung in einen CookieContainer. Damit
+    # laesst sich pruefen, ob der Token-Endpoint die Server-Session braucht
+    # (Token-Variante 5) - und im Log sieht man, welche Cookies gesetzt sind.
+    $script:AcCaptureCookies = {
+        try {
+            $core = $script:AcWebView.CoreWebView2
+            if (-not $core) { return }
+            $task = $core.CookieManager.GetCookiesAsync($Config.ServerUrl)
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while (-not $task.IsCompleted -and $sw.ElapsedMilliseconds -lt 4000) {
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Milliseconds 25
+            }
+            if (-not $task.IsCompleted) { Write-DebugLog 'Cookie capture timed out.'; return }
+            $jar = New-Object System.Net.CookieContainer
+            $names = @()
+            foreach ($c in $task.Result) {
+                $names += $c.Name
+                try {
+                    $dom = ([string]$c.Domain).TrimStart('.')
+                    $jar.Add((New-Object System.Net.Cookie($c.Name, $c.Value, '/', $dom)))
+                } catch { }
+            }
+            $script:AcState.CookieJar = $jar
+            Write-DebugLog ('Session cookies at callback ({0}): {1}' -f $names.Count, ($names -join ', '))
+        } catch {
+            Write-DebugLog ('Cookie capture failed: {0}' -f $_.Exception.Message)
+        }
+    }
 
     # Handles the kp4pps://callback redirect (from either event)
     $script:AcHandleCallback = {
@@ -857,6 +958,7 @@ function Get-TokenViaAuthCodePkce {
                 } else {
                     $script:AcState.Code = $code
                     Write-DebugLog 'Authorization code received.'
+                    & $script:AcCaptureCookies
                 }
             }
         } catch {
@@ -940,39 +1042,77 @@ function Get-TokenViaAuthCodePkce {
     }
 
     # Exchange the authorization code for a bearer token (OAuth2 PKCE).
-    # The server keeps reporting "code_verifier required" even though the raw
-    # body clearly contains it, so we try several encodings of the same request
-    # until one is accepted, and log which. A failed (400) exchange normally
-    # does not consume the code, so several attempts per login are possible.
+    # The server keeps reporting "code_verifier required" although the raw body
+    # provably contains it. Which placement it actually reads is undocumented,
+    # so the Custom Property "Token Variant" selects one - that way a variant
+    # can be tried per sign-in without rebuilding the script. Variant meanings
+    # are listed in docs/TROUBLESHOOTING.md.
     Write-DebugLog 'Exchanging authorization code for access token...'
     $code = $script:AcState.Code
     $ver  = $pkce.Verifier
     $ruri = $script:KpRedirectUri
     $cid  = $script:KpClientId
-    $cidNoBraces = $cid.Trim('{', '}')
 
-    $pairsFull = @(
-        'grant_type=authorization_code',
-        ('client_id=' + [uri]::EscapeDataString($cid)),
-        ('code=' + [uri]::EscapeDataString($code)),
-        ('code_verifier=' + [uri]::EscapeDataString($ver)),
-        ('redirect_uri=' + [uri]::EscapeDataString($ruri))
-    )
-    $bodyFull     = ($pairsFull -join '&')
-    $tokenUrl     = $Config.ServerUrl + '/OAuth2/Token'
+    $pGrant = 'grant_type=authorization_code'
+    $pCid   = 'client_id=' + [uri]::EscapeDataString($cid)
+    $pCode  = 'code=' + [uri]::EscapeDataString($code)
+    $pVer   = 'code_verifier=' + [uri]::EscapeDataString($ver)
+    $pRuri  = 'redirect_uri=' + [uri]::EscapeDataString($ruri)
+    $pExtra = 'device_id=' + [uri]::EscapeDataString($deviceId) +
+              '&device_name=' + [uri]::EscapeDataString($deviceName) +
+              '&client_version_number=9.2.0.0' +
+              '&client_user=' + [uri]::EscapeDataString($clientUser)
+
+    $bodyFull = "$pGrant&$pCid&$pCode&$pVer&$pRuri"
+    $tokenUrl = $Config.ServerUrl + '/OAuth2/Token'
 
     $recomputed = [Convert]::ToBase64String(([System.Security.Cryptography.SHA256]::Create()).ComputeHash([System.Text.Encoding]::ASCII.GetBytes($ver))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
     Write-DebugLog ('Token request: code(len={0}), code_verifier(len={1}), pkce_ok={2}' -f $code.Length, $ver.Length, ($recomputed -eq $pkce.Challenge))
-    # Log the exact outgoing request (URL + body) once. The auth code and the
-    # code_verifier are single-use and worthless after this exchange, so this is
-    # safe and lets us confirm byte-for-byte what the server receives.
-    Write-DebugLog ('Token POST url: ' + $tokenUrl)
-    Write-DebugLog ('Token POST body: ' + $bodyFull)
 
-    $r = Invoke-FormPost -Uri $tokenUrl -Body $bodyFull
+    $variant = '1'
+    if ($Config.ContainsKey('TokenVariant') -and $Config.TokenVariant -match '^\s*\d+\s*$') {
+        $variant = $Config.TokenVariant.Trim()
+    }
+
+    $postArgs = @{ Uri = $tokenUrl; Body = $bodyFull }
+    switch ($variant) {
+        '1' { Write-DebugLog 'Token variant 1: all parameters in the body.' }
+        '2' {
+            Write-DebugLog 'Token variant 2: body + code_verifier repeated in the query string.'
+            $postArgs.Uri = $tokenUrl + '?' + $pVer
+        }
+        '3' {
+            Write-DebugLog 'Token variant 3: all parameters in the query string, empty body.'
+            $postArgs.Uri  = $tokenUrl + '?' + $bodyFull
+            $postArgs.Body = ''
+        }
+        '4' {
+            Write-DebugLog 'Token variant 4: body with explicit charset=utf-8.'
+            $postArgs.ContentType = 'application/x-www-form-urlencoded; charset=utf-8'
+        }
+        '5' {
+            Write-DebugLog 'Token variant 5: body + session cookies from the WebView2 sign-in.'
+            $postArgs.CookieContainer = $script:AcState.CookieJar
+        }
+        '6' {
+            Write-DebugLog 'Token variant 6: body without redirect_uri.'
+            $postArgs.Body = "$pGrant&$pCid&$pCode&$pVer"
+        }
+        '7' {
+            Write-DebugLog 'Token variant 7: body + KeePass device/client parameters.'
+            $postArgs.Body = "$bodyFull&$pExtra"
+        }
+        '8' {
+            Write-DebugLog 'Token variant 8: query string carries everything AND body repeats it.'
+            $postArgs.Uri = $tokenUrl + '?' + $bodyFull
+        }
+        default { Write-DebugLog ('Unknown token variant "{0}" - falling back to 1.' -f $variant) }
+    }
+
+    $r = Invoke-FormPost @postArgs
     if (-not $r.Ok) {
         Write-DebugLog ('Token endpoint error: HTTP {0}, body: [{1}]' -f $r.Status, $r.Content)
-        throw ('Token exchange failed: HTTP {0} {1}' -f $r.Status, $r.Content)
+        throw (Add-LogHint ('Token exchange failed (variant {0}): HTTP {1} {2}' -f $variant, $r.Status, $r.Content))
     }
     $tok = $r.Content | ConvertFrom-Json
     if (-not $tok.access_token) { throw 'Token endpoint returned no access_token.' }
