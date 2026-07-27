@@ -48,9 +48,20 @@ The core complexity of this repo is that Pleasant's REST API officially supports
 
 The `Body` files select the branch: `webclient` → `Get-WebClientStoreObjects` / `Get-WebClientPassword`; otherwise `Invoke-PleasantApi` against REST v5.
 
-### Open problem: PKCE token exchange (SSO mode)
+### The PKCE token exchange, and what the real client does
 
-`Get-TokenViaAuthCodePkce` completes the SAML login and obtains an auth code (`pkce_ok=True`), but `/OAuth2/Token` returns 400 "Proof Key for Code Exchange (PKCE) code_verifier required" even when `code_verifier` is provably in the request. A consumed code then yields `invalid_grant`, so the correct encoding must be sent on the **first** attempt. The `Common.ps1` code logs `Callback query:` and `Token POST body:` to aid diagnosis. The definitive next step is capturing the real KeePass client's `POST /OAuth2/Token` (Fiddler with HTTPS decrypt) to see the exact parameter placement.
+`/OAuth2/Token` long returned 400 "PKCE code_verifier required" even though `code_verifier` was provably in the body. The answer came from reading the shipped KeePass client's IL (`PassMan.Client.dll` / `PasswordServerPlugin.dll` under `C:\Program Files (x86)\Pleasant Solutions\KeePass for Pleasant Password Server`). `PassManClient.GetAccessToken` sends, on top of the form body:
+
+- `X-Pleasant-Client-Identifier` (the client_id, braces included)
+- `X-Pleasant-Client-Version-Number`
+- `X-Pleasant-MAC-Addresses` (all physical MACs, comma-joined)
+- the browser **session cookies** from the WebView2 sign-in as a `Cookie:` header (`.PleasantIdentity.ApplicationCookie` among them)
+
+`PasswordServerBrowserLoginForm.CoreWebView2_WebResourceRequested` puts the same `X-Pleasant-*` headers on the WebView2 requests, so `/oauth2/authorize` carries them too. `PassManClient.GetAuthorizeUrl` sends exactly `client_id, response_type, redirect_uri, code_challenge, code_challenge_method=S256, device_id, device_name, state` — **no** `client_version_number`, **no** `client_user` (the plugin's own `$`-anchored detection regex confirms this). Body order at the token endpoint is `client_id, grant_type, code, redirect_uri, code_verifier`, and only `redirect_uri` is URL-encoded — `client_id` goes out with raw braces.
+
+The "Token Variant" custom property (1–8) switches placement for diagnosis: 1 = faithful emulation (default), 2 = without cookies, 3 = without `X-Pleasant-*` headers, 4 = plain body (pre-v15 behaviour), 5 = percent-encoded client_id, 6 = + device params, 7 = charset, 8 = no redirect_uri. Variants 2/3 isolate which ingredient the server actually requires.
+
+**Diagnostic note:** a dummy authorization code is *not* consumed, but this server checks code validity **before** PKCE, so a dummy code always yields `invalid_grant` and cannot be used to probe parameter placement. Probing needs a real code, i.e. one sign-in per variant.
 
 ## Critical constraints
 
