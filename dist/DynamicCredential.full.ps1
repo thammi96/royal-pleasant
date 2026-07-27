@@ -32,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 
 # Bump this whenever the embedded script changes, so the debug log shows
 # unambiguously which version Royal TS is actually running.
-$script:BuildTag = 'v18'
+$script:BuildTag = 'v19'
 
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
@@ -1044,35 +1044,49 @@ function Get-TokenViaAuthCodePkce {
     }
     Initialize-WebView2Sdk
 
-    $pkce       = New-PkcePair
-    $state      = New-RandomHex 16
     $deviceId   = Get-DeviceId
     $deviceName = $env:COMPUTERNAME
     $clientUser = if ($Config.Username) { $Config.Username } else { $env:USERNAME }
 
-    # Exakt die Parameterliste und -reihenfolge des KeePass-Clients
-    # (PassManClient.GetAuthorizeUrl). Der Client haengt KEIN
-    # client_version_number und KEIN client_user an - sein eigenes Muster zur
-    # Erkennung der Authorize-URL endet hinter "state" ($-verankert).
-    $authorizePath = '/oauth2/authorize?client_id=' + [uri]::EscapeDataString($script:KpClientId) +
-        '&response_type=code&redirect_uri=' + [uri]::EscapeDataString($script:KpRedirectUri) +
-        '&code_challenge=' + [uri]::EscapeDataString($pkce.Challenge) +
-        '&code_challenge_method=S256' +
-        '&device_id=' + [uri]::EscapeDataString($deviceId) +
-        '&device_name=' + [uri]::EscapeDataString($deviceName) +
-        '&state=' + $state
+    $variantEarly = '1'
+    if ($Config.ContainsKey('TokenVariant') -and $Config.TokenVariant -match '^\s*\d+\s*$') {
+        $variantEarly = $Config.TokenVariant.Trim()
+    }
 
-    # Navigate DIRECTLY to /oauth2/authorize (no SAML ReturnUrl wrapper). The
-    # wrapper double-encoded the query and may have dropped code_challenge, so
-    # the code was issued without a bound challenge -> "code_verifier required"
-    # at the token step. Going direct keeps code_challenge intact; if the
-    # WebView2 session is already authenticated (persistent profile) it stays
-    # silent, otherwise the server redirects to the SAML sign-in first.
-    $startUrl = $Config.ServerUrl + $authorizePath
-    Write-DebugLog ('Authorize URL: {0}{1}' -f $Config.ServerUrl, ($authorizePath -replace '(code_challenge=)[^&]+', '$1<challenge>'))
-
-    $script:AcState = @{ Code = $null; Error = $null; ExpectedState = $state; CookieJar = $null; CookieHeader = $null; Busy = $false; HeaderLogged = $false }
+    $script:AcState = @{
+        Code = $null; Error = $null; ExpectedState = $null; Pkce = $null
+        CookieJar = $null; CookieHeader = $null; Busy = $false
+        Round = 0; Renavigate = $false; DoubleAuthorize = ($variantEarly -eq '10')
+    }
     $script:AcClientHeaders = Get-PleasantClientHeaders
+    $script:AcDeviceId   = $deviceId
+    $script:AcDeviceName = $deviceName
+
+    # Baut eine frische Authorize-URL (neues PKCE-Paar + state) und merkt
+    # beides im State. Exakt die Parameterliste und -reihenfolge des
+    # KeePass-Clients (PassManClient.GetAuthorizeUrl): KEIN
+    # client_version_number, KEIN client_user - sein eigenes Muster zur
+    # Erkennung der Authorize-URL endet hinter "state" ($-verankert).
+    $script:AcNewAuthorizeUrl = {
+        $p  = New-PkcePair
+        $st = New-RandomHex 16
+        $script:AcState.Pkce = $p
+        $script:AcState.ExpectedState = $st
+        $path = '/oauth2/authorize?client_id=' + [uri]::EscapeDataString($script:KpClientId) +
+            '&response_type=code&redirect_uri=' + [uri]::EscapeDataString($script:KpRedirectUri) +
+            '&code_challenge=' + [uri]::EscapeDataString($p.Challenge) +
+            '&code_challenge_method=S256' +
+            '&device_id=' + [uri]::EscapeDataString($script:AcDeviceId) +
+            '&device_name=' + [uri]::EscapeDataString($script:AcDeviceName) +
+            '&state=' + $st
+        Write-DebugLog ('Authorize URL: {0}{1}' -f $Config.ServerUrl, ($path -replace '(code_challenge=)[^&]+', '$1<challenge>'))
+        return ($Config.ServerUrl + $path)
+    }
+
+    $startUrl = & $script:AcNewAuthorizeUrl
+    if ($script:AcState.DoubleAuthorize) {
+        Write-DebugLog 'Double-authorize mode: the first code is discarded, then a fresh authorize runs on the established session (single hop).'
+    }
 
     # Liest die Cookies der WebView2-Sitzung in einen CookieContainer. Damit
     # laesst sich pruefen, ob der Token-Endpoint die Server-Session braucht
@@ -1130,9 +1144,18 @@ function Get-TokenViaAuthCodePkce {
                 if ($st -ne $script:AcState.ExpectedState) {
                     $script:AcState.Error = 'State mismatch (possible CSRF) - aborting.'
                     Write-DebugLog $script:AcState.Error
+                } elseif ($script:AcState.DoubleAuthorize -and $script:AcState.Round -eq 0) {
+                    # Erster Durchlauf lief ueber SignIn/SAML. Diesen Code
+                    # verwerfen und mit jetzt bestehender Sitzung ein zweites
+                    # Mal autorisieren - dann geht Authorize in EINEM Hop, ohne
+                    # Umleitung, und die code_challenge kann unterwegs nicht
+                    # verlorengehen.
+                    $script:AcState.Round = 1
+                    $script:AcState.Renavigate = $true
+                    Write-DebugLog 'First authorization code discarded (double-authorize mode), starting second round.'
                 } else {
                     $script:AcState.Code = $code
-                    Write-DebugLog 'Authorization code received.'
+                    Write-DebugLog ('Authorization code received (round {0}).' -f ($script:AcState.Round + 1))
                 }
             }
         } catch {
@@ -1170,7 +1193,7 @@ function Get-TokenViaAuthCodePkce {
                     $e2.Cancel = $true
                     if ([string]$e2.Uri -like 'kp4pps:*') { & $script:AcHandleCallback ([string]$e2.Uri) }
                 } catch { }
-                if ($script:AcState.Code -or $script:AcState.Error) {
+                if ($script:AcState.Code -or $script:AcState.Error -or $script:AcState.Renavigate) {
                     $script:AcForm.BeginInvoke([Action]{ $script:AcFinishTimer.Start() }) | Out-Null
                 }
             })
@@ -1212,7 +1235,7 @@ function Get-TokenViaAuthCodePkce {
             # einem WebView2-Event-Handler pumpt DoEvents die Schleife nicht,
             # GetCookiesAsync laeuft dann in den Timeout. Ein Timer-Tick ist
             # ein sauberer Kontext (so macht es auch der WebClient-Modus).
-            if ($script:AcState.Code -or $script:AcState.Error) { $script:AcFinishTimer.Start() }
+            if ($script:AcState.Code -or $script:AcState.Error -or $script:AcState.Renavigate) { $script:AcFinishTimer.Start() }
         } else {
             # log without query string (may carry sensitive values)
             $bare = ($u -split '\?', 2)[0]
@@ -1229,6 +1252,11 @@ function Get-TokenViaAuthCodePkce {
         $script:AcState.Busy = $true
         try {
             $script:AcFinishTimer.Stop()
+            if ($script:AcState.Renavigate) {
+                $script:AcState.Renavigate = $false
+                $script:AcWebView.Source = [Uri](& $script:AcNewAuthorizeUrl)
+                return
+            }
             if ($script:AcState.Code) { & $script:AcCaptureCookies }
             $script:AcForm.Close()
         } catch {
@@ -1265,7 +1293,7 @@ function Get-TokenViaAuthCodePkce {
     # are listed in docs/TROUBLESHOOTING.md.
     Write-DebugLog 'Exchanging authorization code for access token...'
     $code = $script:AcState.Code
-    $ver  = $pkce.Verifier
+    $ver  = $script:AcState.Pkce.Verifier
     $ruri = $script:KpRedirectUri
     $cid  = $script:KpClientId
 
@@ -1280,7 +1308,7 @@ function Get-TokenViaAuthCodePkce {
     $tokenUrl = $Config.ServerUrl + '/OAuth2/Token'
 
     $recomputed = [Convert]::ToBase64String(([System.Security.Cryptography.SHA256]::Create()).ComputeHash([System.Text.Encoding]::ASCII.GetBytes($ver))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-    Write-DebugLog ('Token request: code(len={0}), code_verifier(len={1}), pkce_ok={2}' -f $code.Length, $ver.Length, ($recomputed -eq $pkce.Challenge))
+    Write-DebugLog ('Token request: code(len={0}), code_verifier(len={1}), pkce_ok={2}, round={3}' -f $code.Length, $ver.Length, ($recomputed -eq $script:AcState.Pkce.Challenge), ($script:AcState.Round + 1))
 
     # Kopf des echten Clients: X-Pleasant-Header + die Session-Cookies aus dem
     # Browser-Login (PassManWebClient haengt beides an jeden Request).
@@ -1300,6 +1328,10 @@ function Get-TokenViaAuthCodePkce {
     if ($Config.ContainsKey('TokenVariant') -and $Config.TokenVariant -match '^\s*\d+\s*$') {
         $variant = $Config.TokenVariant.Trim()
     }
+
+    # Variante 10 aendert nur den Authorize-Ablauf, der Token-Request ist der
+    # von Variante 1.
+    if ($variant -eq '10') { $variant = '1' }
 
     # Variante 9 umgeht unseren HTTP-Code komplett.
     if ($variant -eq '9') {
@@ -1411,6 +1443,7 @@ function Invoke-PleasantApi {
     }
     return ($r.Content | ConvertFrom-Json)
 }
+
 
 # ============================================================================
 #  Auth-Modus "WebClient" (Cookie-Modus)
