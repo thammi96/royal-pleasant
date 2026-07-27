@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 # Bump this whenever the embedded script changes, so the debug log shows
 # unambiguously which version Royal TS is actually running.
-$script:BuildTag = 'v17'
+$script:BuildTag = 'v18'
 
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
@@ -925,16 +925,34 @@ function Get-TokenViaPleasantClientDll {
     }
     Write-DebugLog ('Using Pleasant client library from: {0}' -f $dir)
 
-    $script:PpsLibDir = $dir
-    $script:PpsResolving = @{}
+    # Abhaengigkeiten VORAB laden. Ein AssemblyResolve-Handler ist hier
+    # unbrauchbar: das Delegat-Scriptblock laeuft in einem Kontext, in dem die
+    # $script:-Variablen nicht aufloesen - die Aufloesung scheitert dann still
+    # und der spaetere Aufruf stirbt ohne Logeintrag.
+    foreach ($dep in @(
+        'System.Runtime.CompilerServices.Unsafe.dll', 'System.Buffers.dll',
+        'System.Memory.dll', 'System.Numerics.Vectors.dll', 'System.ValueTuple.dll',
+        'System.Threading.Tasks.Extensions.dll', 'Microsoft.Bcl.AsyncInterfaces.dll',
+        'System.Text.Encodings.Web.dll', 'System.Text.Json.dll',
+        'Newtonsoft.Json.dll', 'NLog.dll'
+    )) {
+        $dp = Join-Path $dir $dep
+        if (Test-Path $dp) {
+            try { [void][Reflection.Assembly]::LoadFrom($dp) }
+            catch { Write-DebugLog ('Dependency {0} could not be loaded: {1}' -f $dep, $_.Exception.Message) }
+        }
+    }
+
+    # Ersetzt die Binding-Redirects aus KeePass.exe.config, die hier fehlen:
+    # liefert die bereits geladene Assembly gleichen einfachen Namens zurueck,
+    # egal welche Version angefordert wird (System.Text.Json verlangt z.B.
+    # Unsafe 4.0.4.1). Bewusst OHNE externe Variablen, sonst loest der
+    # Scriptblock im Delegat-Kontext nichts auf.
     [AppDomain]::CurrentDomain.add_AssemblyResolve([System.ResolveEventHandler] {
-        param($s, $e)
-        $n = ($e.Name -split ',')[0]
-        if ($script:PpsResolving.ContainsKey($n)) { return $null }
-        $script:PpsResolving[$n] = $true
-        foreach ($ext in @('.dll', '.exe')) {
-            $p = Join-Path $script:PpsLibDir ($n + $ext)
-            if (Test-Path $p) { return [Reflection.Assembly]::LoadFrom($p) }
+        param($sender, $e)
+        $simple = ($e.Name -split ',')[0]
+        foreach ($a in [AppDomain]::CurrentDomain.GetAssemblies()) {
+            if ($a.GetName().Name -eq $simple) { return $a }
         }
         return $null
     })
@@ -942,6 +960,7 @@ function Get-TokenViaPleasantClientDll {
     $asm  = [Reflection.Assembly]::LoadFrom((Join-Path $dir 'PassMan.Client.dll'))
     $type = $asm.GetType('PassMan.Client.PassManClient')
     $macs = @(Get-MacAddressList)
+    Write-DebugLog ('Client library loaded: {0}' -f $asm.FullName)
 
     $client = $type.GetConstructors()[0].Invoke(@(
         $script:KpClientId, $macs[0], $env:COMPUTERNAME, $script:KpRedirectUri,
@@ -950,19 +969,47 @@ function Get-TokenViaPleasantClientDll {
     $client.ServerUrl     = $Config.ServerUrl.TrimEnd('/') + '/'
     $client.ClientVersion = $script:KpClientVersion
     $client.MacAddresses  = ($macs -join ',')
+    $cookieSet = $false
     if ($script:AcState.CookieHeader) {
-        # PassManWebClient erwartet eine komplette Headerzeile ("name: value")
-        try { $client.Cookies = 'Cookie: ' + $script:AcState.CookieHeader } catch {
-            Write-DebugLog ('Could not set Cookies on the client library: {0}' -f $_.Exception.Message)
-        }
+        # Rohe Cookie-Paare ohne "Cookie: "-Praefix - die Bibliothek setzt den
+        # Headernamen selbst (mit Praefix kaeme "Cookie: Cookie: ..." heraus).
+        try { $client.Cookies = $script:AcState.CookieHeader; $cookieSet = $true }
+        catch { Write-DebugLog ('Could not set Cookies on the client library: {0}' -f $_.Exception.Message) }
     }
-    Write-DebugLog ('Client library configured, token endpoint: {0}' -f $client.TokenEndpoint)
+    # TokenEndpoint hat keinen oeffentlichen Getter -> ueber Reflection lesen
+    $ep = ''
+    try { $ep = [string]$type.GetMethod('get_TokenEndpoint', [Reflection.BindingFlags]'Public,NonPublic,Instance').Invoke($client, @()) } catch { }
+    Write-DebugLog ('Client library configured: endpoint={0}, macs={1}, cookiesSet={2}' -f $ep, $macs.Count, $cookieSet)
 
-    $token = $type.GetMethod('GetAccessToken', [type[]]@([string], [string])).Invoke($client, @($Code, $Verifier))
-    if (-not $token) { throw 'Pleasant client library returned no access token.' }
+    Write-DebugLog 'Calling PassManClient.GetAccessToken(authCode, codeVerifier)...'
+    $token = $null
+    try {
+        $token = $type.GetMethod('GetAccessToken', [type[]]@([string], [string])).Invoke($client, @($Code, $Verifier))
+    } catch {
+        # Die Bibliothek verpackt Fehler mehrfach - die ganze Kette loggen,
+        # sonst sieht man den eigentlichen Serverfehler nicht.
+        $ex = $_.Exception
+        $depth = 0
+        while ($ex -and $depth -lt 6) {
+            Write-DebugLog ('Client library exception [{0}] {1}: {2}' -f $depth, $ex.GetType().FullName, $ex.Message)
+            if ($ex -is [System.Net.WebException] -and $ex.Response) {
+                try {
+                    $sr = New-Object System.IO.StreamReader($ex.Response.GetResponseStream())
+                    Write-DebugLog ('Client library server response: {0}' -f $sr.ReadToEnd())
+                    $sr.Close()
+                } catch { }
+            }
+            $ex = $ex.InnerException; $depth++
+        }
+        throw (Add-LogHint ('Token exchange via the installed Pleasant client library failed: ' + $_.Exception.Message))
+    }
+    if (-not $token) { throw (Add-LogHint 'Pleasant client library returned no access token.') }
 
     $expiresAt = 0
-    try { $expiresAt = [long]$client.TokenExpiry.ToUnixTimeSeconds() } catch { }
+    try {
+        $te = $type.GetMethod('get_TokenExpiry', [Reflection.BindingFlags]'Public,NonPublic,Instance').Invoke($client, @())
+        $expiresAt = [long]$te.ToUnixTimeSeconds()
+    } catch { }
     if ($expiresAt -le 0) { $expiresAt = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 1200 }
     Write-DebugLog 'Access token acquired via the installed Pleasant client library.'
     return @{ Token = [string]$token; ExpiresAt = $expiresAt }
