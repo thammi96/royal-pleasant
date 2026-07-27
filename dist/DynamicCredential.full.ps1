@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 
 # Bump this whenever the embedded script changes, so the debug log shows
 # unambiguously which version Royal TS is actually running.
-$script:BuildTag = 'v12-classic'
+$script:BuildTag = 'v13'
 
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
