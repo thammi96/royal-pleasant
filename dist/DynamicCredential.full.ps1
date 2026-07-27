@@ -32,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 
 # Bump this whenever the embedded script changes, so the debug log shows
 # unambiguously which version Royal TS is actually running.
-$script:BuildTag = 'v16'
+$script:BuildTag = 'v17'
 
 $script:IsPsCore = ($PSVersionTable.PSEdition -eq 'Core')
 $script:AppDir   = Join-Path $env:LOCALAPPDATA 'RoyalTS-PleasantPPS'
@@ -177,14 +177,20 @@ function Invoke-FormPost {
         [string]$Body,
         [string]$ContentType = 'application/x-www-form-urlencoded',
         [hashtable]$ExtraHeaders = $null,
-        $CookieContainer = $null
+        $CookieContainer = $null,
+        # Der echte KeePass-Client (System.Net.WebClient) sendet
+        # "Expect: 100-continue" und "Connection: Keep-Alive" und setzt KEINEN
+        # Accept-Header. Diese Schalter erlauben die exakte Nachbildung.
+        [bool]$ExpectContinue = $false,
+        [bool]$KeepAlive = $false,
+        [bool]$SendAccept = $true
     )
     $req = [System.Net.HttpWebRequest]::Create($Uri)
     $req.Method = 'POST'
     if ($ContentType) { $req.ContentType = $ContentType }
-    $req.Accept = 'application/json'
-    $req.ServicePoint.Expect100Continue = $false
-    $req.KeepAlive = $false
+    if ($SendAccept) { $req.Accept = 'application/json' }
+    $req.ServicePoint.Expect100Continue = $ExpectContinue
+    $req.KeepAlive = $KeepAlive
     if ($CookieContainer) { $req.CookieContainer = $CookieContainer }
     if ($ExtraHeaders) {
         foreach ($k in $ExtraHeaders.Keys) {
@@ -888,11 +894,11 @@ function New-RandomHex {
 function Get-MacAddressList {
     $macs = New-Object System.Collections.ArrayList
     try {
+        # Kein OperationalStatus-Filter: der echte Client nimmt alle Adapter
+        # ausser Loopback/Tunnel. Mit Filter kaemen andere device_id und eine
+        # andere MAC-Liste heraus als beim Original (nachgemessen).
         foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
             if ($nic.NetworkInterfaceType -eq 'Loopback' -or $nic.NetworkInterfaceType -eq 'Tunnel') { continue }
-            # nur aktive Adapter - sonst wandert die device_id je nach Zustand
-            # virtueller Adapter und der Server sieht staendig neue Geraete
-            if ($nic.OperationalStatus -ne 'Up') { continue }
             $addr = $nic.GetPhysicalAddress().ToString()
             if ($addr -and $addr.Length -ge 12 -and -not $macs.Contains($addr)) { [void]$macs.Add($addr) }
         }
@@ -920,6 +926,67 @@ function Get-PleasantClientHeaders {
     $user = if ($Config.Username) { $Config.Username } else { $env:USERNAME }
     if ($user -and $user.Trim()) { $h['X-Pleasant-Client-User'] = $user }
     return $h
+}
+
+# Token-Variante 9: den Tausch von Pleasants EIGENER Client-Bibliothek
+# erledigen lassen (falls "KeePass for Pleasant Password Server" installiert
+# ist). Das ist vor allem ein Beweismittel: schlaegt auch das fehl, liegt das
+# Problem serverseitig und nicht an unserem Request.
+function Get-TokenViaPleasantClientDll {
+    param([string]$Code, [string]$Verifier)
+
+    $dir = $null
+    foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+        if (-not $base) { continue }
+        $p = Join-Path $base 'Pleasant Solutions\KeePass for Pleasant Password Server'
+        if (Test-Path (Join-Path $p 'PassMan.Client.dll')) { $dir = $p; break }
+    }
+    if (-not $dir) {
+        throw 'Token variant 9 requires "KeePass for Pleasant Password Server" to be installed (PassMan.Client.dll not found).'
+    }
+    Write-DebugLog ('Using Pleasant client library from: {0}' -f $dir)
+
+    $script:PpsLibDir = $dir
+    $script:PpsResolving = @{}
+    [AppDomain]::CurrentDomain.add_AssemblyResolve([System.ResolveEventHandler] {
+        param($s, $e)
+        $n = ($e.Name -split ',')[0]
+        if ($script:PpsResolving.ContainsKey($n)) { return $null }
+        $script:PpsResolving[$n] = $true
+        foreach ($ext in @('.dll', '.exe')) {
+            $p = Join-Path $script:PpsLibDir ($n + $ext)
+            if (Test-Path $p) { return [Reflection.Assembly]::LoadFrom($p) }
+        }
+        return $null
+    })
+
+    $asm  = [Reflection.Assembly]::LoadFrom((Join-Path $dir 'PassMan.Client.dll'))
+    $type = $asm.GetType('PassMan.Client.PassManClient')
+    $macs = @(Get-MacAddressList)
+
+    $client = $type.GetConstructors()[0].Invoke(@(
+        $script:KpClientId, $macs[0], $env:COMPUTERNAME, $script:KpRedirectUri,
+        $null, $null, $null, $null
+    ))
+    $client.ServerUrl     = $Config.ServerUrl.TrimEnd('/') + '/'
+    $client.ClientVersion = $script:KpClientVersion
+    $client.MacAddresses  = ($macs -join ',')
+    if ($script:AcState.CookieHeader) {
+        # PassManWebClient erwartet eine komplette Headerzeile ("name: value")
+        try { $client.Cookies = 'Cookie: ' + $script:AcState.CookieHeader } catch {
+            Write-DebugLog ('Could not set Cookies on the client library: {0}' -f $_.Exception.Message)
+        }
+    }
+    Write-DebugLog ('Client library configured, token endpoint: {0}' -f $client.TokenEndpoint)
+
+    $token = $type.GetMethod('GetAccessToken', [type[]]@([string], [string])).Invoke($client, @($Code, $Verifier))
+    if (-not $token) { throw 'Pleasant client library returned no access token.' }
+
+    $expiresAt = 0
+    try { $expiresAt = [long]$client.TokenExpiry.ToUnixTimeSeconds() } catch { }
+    if ($expiresAt -le 0) { $expiresAt = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 1200 }
+    Write-DebugLog 'Access token acquired via the installed Pleasant client library.'
+    return @{ Token = [string]$token; ExpiresAt = $expiresAt }
 }
 
 function Get-TokenViaAuthCodePkce {
@@ -1187,46 +1254,58 @@ function Get-TokenViaAuthCodePkce {
         $variant = $Config.TokenVariant.Trim()
     }
 
-    # Zwei offene Hypothesen, warum der Server den Verifier nicht sieht:
-    #   H1 der Token-Request braucht die Session-Cookies des Browser-Logins
-    #   H2 der Server liest code_verifier aus dem QUERY-String, waehrend
-    #      grant_type/code aus dem Body kommen (alles-im-Query scheitert
-    #      nachweislich an "unsupported_grant_type")
-    # Variante 1 deckt beide gleichzeitig ab, 2-4 trennen sie auf.
-    $postArgs = @{ Uri = $tokenUrl; Body = $bodyFull; ExtraHeaders = $hdrFull }
+    # Variante 9 umgeht unseren HTTP-Code komplett.
+    if ($variant -eq '9') {
+        Write-DebugLog 'Token variant 9: delegating the exchange to the installed Pleasant client library.'
+        return (Get-TokenViaPleasantClientDll -Code $code -Verifier $ver)
+    }
+
+    # Der echte Client wurde mitgeschnitten (eigene DLL gegen lokalen Listener):
+    # POST /oauth2/token, Expect: 100-continue, Connection: Keep-Alive, KEIN
+    # Accept-Header, kein Query-String, Body exakt wie oben. Variante 1 bildet
+    # genau das nach; 2-8 variieren jeweils EINE Zutat davon.
+    $tokenUrlLower = $Config.ServerUrl + '/oauth2/token'
+    $postArgs = @{
+        Uri            = $tokenUrlLower
+        Body           = $bodyFull
+        ExtraHeaders   = $hdrFull
+        ExpectContinue = $true
+        KeepAlive      = $true
+        SendAccept     = $false
+    }
     switch ($variant) {
-        '1' {
-            Write-DebugLog 'Token variant 1: cookies + X-Pleasant headers + code_verifier in body AND query (covers H1 and H2).'
-            $postArgs.Uri = $tokenUrl + '?' + $pVer
-        }
+        '1' { Write-DebugLog 'Token variant 1: byte-for-byte replication of the captured client request.' }
         '2' {
-            Write-DebugLog 'Token variant 2: faithful client emulation - cookies + headers, verifier in body only (H1).'
+            Write-DebugLog 'Token variant 2: like 1 but WITHOUT session cookies.'
+            $postArgs.ExtraHeaders = $hdrClient
         }
         '3' {
-            Write-DebugLog 'Token variant 3: verifier in body AND query, no cookies, no headers (H2 alone).'
-            $postArgs.Uri = $tokenUrl + '?' + $pVer
-            $postArgs.ExtraHeaders = $null
+            Write-DebugLog 'Token variant 3: like 1 but path /OAuth2/Token (mixed case).'
+            $postArgs.Uri = $tokenUrl
         }
         '4' {
-            Write-DebugLog 'Token variant 4: plain body only, no cookies, no headers (baseline).'
-            $postArgs.ExtraHeaders = $null
+            Write-DebugLog 'Token variant 4: like 1 but WITHOUT Expect: 100-continue.'
+            $postArgs.ExpectContinue = $false
+            $postArgs.KeepAlive = $false
         }
         '5' {
-            Write-DebugLog 'Token variant 5: cookies only, no X-Pleasant headers, verifier in body.'
-            $h = @{}; if ($script:AcState.CookieHeader) { $h['Cookie'] = $script:AcState.CookieHeader }
-            $postArgs.ExtraHeaders = $h
+            Write-DebugLog 'Token variant 5: plain body only, no cookies, no headers, no Expect (pre-v17 baseline).'
+            $postArgs.ExtraHeaders = $null
+            $postArgs.ExpectContinue = $false
+            $postArgs.KeepAlive = $false
+            $postArgs.SendAccept = $true
         }
         '6' {
-            Write-DebugLog 'Token variant 6: like 2 but client_id percent-encoded.'
-            $postArgs.Body = ('client_id=' + [uri]::EscapeDataString($cid)) + "&$pGrant&$pCode&$pRuri&$pVer"
+            Write-DebugLog 'Token variant 6: like 1 + code_verifier repeated in the query string.'
+            $postArgs.Uri = $tokenUrlLower + '?' + $pVer
         }
         '7' {
-            Write-DebugLog 'Token variant 7: like 2 with charset=utf-8.'
-            $postArgs.ContentType = 'application/x-www-form-urlencoded; charset=utf-8'
+            Write-DebugLog 'Token variant 7: like 1 but code_verifier FIRST in the body.'
+            $postArgs.Body = "$pVer&$pCid&$pGrant&$pCode&$pRuri"
         }
         '8' {
-            Write-DebugLog 'Token variant 8: like 2 + device_id/device_name in the body.'
-            $postArgs.Body = "$bodyFull&device_id=$deviceId&device_name=" + [uri]::EscapeDataString($deviceName)
+            Write-DebugLog 'Token variant 8: like 1 but client_id percent-encoded.'
+            $postArgs.Body = ('client_id=' + [uri]::EscapeDataString($cid)) + "&$pGrant&$pCode&$pRuri&$pVer"
         }
         default { Write-DebugLog ('Unknown token variant "{0}" - falling back to 1.' -f $variant) }
     }
